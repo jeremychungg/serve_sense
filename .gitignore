@@ -1,0 +1,30 @@
+# Python / data
+__pycache__/
+.venv/
+env/
+.env
+*.pyc
+data/
+*.parquet
+*.csv
+
+# PlatformIO / build
+.pio/
+.pioenvs/
+.vscode/
+firmware/**/.pio/
+firmware/**/.pioenvs/
+firmware/**/.clangd/
+firmware/**/.cache/
+
+# Notebooks
+.ipynb_checkpoints/
+
+# Models
+models/**/*.tflite
+models/**/*.onnx
+
+# OS files
+.DS_Store
+Thumbs.db
+
