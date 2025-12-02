@@ -8,6 +8,11 @@ This application provides:
 - Data collection with serve type labeling
 - Professional UI with status bar and menu system
 
+Windows Compatibility:
+- Uses proper QThread for BLE operations
+- Handles Windows COM threading and event loop configuration
+- Implements robust error handling for Windows BLE backend
+
 Usage:
     python serve_sense_gui.py
     python serve_sense_gui.py --address XX:YY:ZZ:...
@@ -17,6 +22,7 @@ import argparse
 import asyncio
 import datetime as dt
 import json
+import logging
 import math
 import pathlib
 import struct
@@ -38,9 +44,23 @@ from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg as FigureCanvas
 from matplotlib.figure import Figure
 from bleak import BleakClient, BleakScanner
 
-# Add parent directory to path to import serve_labels
+# Add parent directory to path to import serve_labels and ble_utils
 sys.path.insert(0, str(pathlib.Path(__file__).parent.parent))
 from serve_labels import SERVE_LABELS, get_label_display_name
+from ble_utils import (
+    setup_windows_event_loop,
+    init_windows_com_threading,
+    discover_device_with_retry,
+    scan_devices,
+    BLEConnectionManager
+)
+
+# Configure logging
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+)
+logger = logging.getLogger(__name__)
 
 # BLE UUIDs
 IMU_UUID = "0000ff01-0000-1000-8000-00805f9b34fb"
@@ -85,7 +105,7 @@ class OrientationFilter:
 
 
 class BLEWorker(QObject):
-    """Worker thread for BLE operations."""
+    """Worker thread for BLE operations with Windows compatibility."""
     
     # Signals
     device_found = Signal(str, str)  # address, name
@@ -101,70 +121,76 @@ class BLEWorker(QObject):
         self.running = False
         self.loop = None
         
+        # Initialize Windows COM threading for this thread
+        if sys.platform == "win32":
+            init_windows_com_threading()
+        
     def set_address(self, address: str):
         """Set BLE device address."""
         self.address = address
     
     @Slot()
     def scan_devices(self):
-        """Scan for BLE devices."""
+        """Scan for BLE devices with Windows-compatible event loop."""
+        # Set up event loop for this thread
+        setup_windows_event_loop()
         asyncio.run(self._scan_async())
     
     async def _scan_async(self):
-        """Async device scanning."""
+        """Async device scanning with retry."""
         try:
-            devices = await BleakScanner.discover(timeout=5.0)
-            for dev in devices:
-                if dev.name:
-                    self.device_found.emit(dev.address, dev.name)
+            devices_list = await scan_devices(timeout=5.0)
+            for address, name in devices_list:
+                self.device_found.emit(address, name)
         except Exception as e:
+            logger.error(f"Scan error: {e}", exc_info=True)
             self.connection_error.emit(f"Scan error: {str(e)}")
     
     @Slot()
     def connect(self):
-        """Connect to BLE device."""
+        """Connect to BLE device with Windows-compatible event loop."""
         if not self.address:
             self.connection_error.emit("No device address set")
             return
+        
+        # Set up event loop for this thread
+        setup_windows_event_loop()
         asyncio.run(self._connect_async())
     
     async def _connect_async(self):
-        """Async BLE connection."""
+        """Async BLE connection with robust error handling."""
         try:
-            self.client = BleakClient(self.address)
-            await self.client.connect()
-            
-            if not self.client.is_connected:
-                self.connection_error.emit("Failed to connect")
-                return
-            
-            self.connected.emit(self.address)
-            
-            # Start notifications
-            await self.client.start_notify(IMU_UUID, self._handle_notify)
-            
-            # Start capture
-            try:
-                await self.client.write_gatt_char(CTRL_UUID, bytes([0x01]), response=True)
-            except Exception as e:
-                print(f"Warning: Failed to start capture: {e}")
-            
-            self.running = True
-            
-            # Keep connection alive
-            while self.running and self.client.is_connected:
-                await asyncio.sleep(0.1)
+            async with BLEConnectionManager(self.address) as client:
+                self.client = client
+                self.connected.emit(self.address)
+                
+                # Start notifications
+                await client.start_notify(IMU_UUID, self._handle_notify)
+                
+                # Start capture
+                try:
+                    await client.write_gatt_char(CTRL_UUID, bytes([0x01]), response=True)
+                except Exception as e:
+                    logger.warning(f"Failed to start capture: {e}")
+                
+                self.running = True
+                
+                # Keep connection alive
+                while self.running and client.is_connected:
+                    await asyncio.sleep(0.1)
+                
+                # Stop capture before disconnect
+                try:
+                    await client.write_gatt_char(CTRL_UUID, bytes([0x00]), response=True)
+                    await client.stop_notify(IMU_UUID)
+                except Exception as e:
+                    logger.warning(f"Error during cleanup: {e}")
                 
         except Exception as e:
+            logger.error(f"Connection error: {e}", exc_info=True)
             self.connection_error.emit(f"Connection error: {str(e)}")
         finally:
-            if self.client and self.client.is_connected:
-                try:
-                    await self.client.write_gatt_char(CTRL_UUID, bytes([0x00]), response=True)
-                    await self.client.stop_notify(IMU_UUID)
-                    await self.client.disconnect()
-                except:
-                    pass
+            self.client = None
             self.disconnected.emit()
     
     def _handle_notify(self, _, data: bytearray):
@@ -761,7 +787,13 @@ def parse_args() -> argparse.Namespace:
 
 
 def main():
-    """Main application entry point."""
+    """Main application entry point with Windows BLE support."""
+    # Initialize Windows-compatible event loop
+    setup_windows_event_loop()
+    
+    # Initialize COM threading on Windows (safe on other platforms)
+    init_windows_com_threading()
+    
     args = parse_args()
     
     app = QApplication(sys.argv)

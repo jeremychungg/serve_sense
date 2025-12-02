@@ -8,6 +8,7 @@ Usage:
 import argparse
 import asyncio
 import datetime as dt
+import logging
 import pathlib
 import struct
 import sys
@@ -16,6 +17,21 @@ from typing import List, Optional
 
 import pandas as pd
 from bleak import BleakClient, BleakScanner
+
+# Import Windows-compatible BLE utilities
+from ble_utils import (
+    setup_windows_event_loop,
+    init_windows_com_threading,
+    discover_device_with_retry,
+    BLEConnectionManager
+)
+
+# Configure logging
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+)
+logger = logging.getLogger(__name__)
 
 IMU_UUID  = "0000ff01-0000-1000-8000-00805f9b34fb"
 CTRL_UUID = "0000ff02-0000-1000-8000-00805f9b34fb"
@@ -54,30 +70,36 @@ class ServeSample:
 
 
 async def find_device(name_hint: str) -> str:
-    devices = await BleakScanner.discover(timeout=5.0)
-    for dev in devices:
-        if dev.name and name_hint.lower() in dev.name.lower():
-            return dev.address
-    raise RuntimeError(f"No BLE device found matching '{name_hint}'")
+    """
+    Find BLE device with retry logic (Windows-compatible).
+    
+    Uses discover_device_with_retry for robust device discovery
+    with exponential backoff.
+    """
+    return await discover_device_with_retry(name_hint, timeout=5.0, max_retries=3)
 
 
 async def collect(address: str, duration: Optional[float], label: Optional[str]) -> List[ServeSample]:
+    """
+    Collect IMU samples from BLE device (Windows-compatible).
+    
+    Uses BLEConnectionManager for robust connection handling with
+    automatic retry and proper cleanup.
+    """
     samples: List[ServeSample] = []
 
     def handle(_, data: bytearray):
         if len(data) != PACKET_STRUCT.size:
-            print(f"[WARN] Unexpected payload size {len(data)}", file=sys.stderr)
+            logger.warning(f"Unexpected payload size {len(data)}")
             return
         samples.append(ServeSample.from_bytes(bytes(data), label))
 
-    async with BleakClient(address) as client:
-        if not client.is_connected:
-            raise RuntimeError("BLE connection failed")
-        print(f"[BLE] Connected to {address}")
+    async with BLEConnectionManager(address) as client:
+        logger.info(f"[BLE] Connected to {address}")
 
         await client.start_notify(IMU_UUID, handle)
         await client.write_gatt_char(CTRL_UUID, bytes([0x01]), response=True)  # start
-        print("[BLE] Capture started")
+        logger.info("[BLE] Capture started")
 
         start = dt.datetime.now()
         try:
@@ -86,7 +108,7 @@ async def collect(address: str, duration: Optional[float], label: Optional[str])
                 if duration and (dt.datetime.now() - start).total_seconds() > duration:
                     break
         except KeyboardInterrupt:
-            print("\n[BLE] KeyboardInterrupt – stopping stream")
+            logger.info("\n[BLE] KeyboardInterrupt – stopping stream")
         finally:
             await client.write_gatt_char(CTRL_UUID, bytes([0x00]), response=True)
             await client.stop_notify(IMU_UUID)
@@ -96,7 +118,7 @@ async def collect(address: str, duration: Optional[float], label: Optional[str])
 
 def save_samples(samples: List[ServeSample], out_path: pathlib.Path):
     if not samples:
-        print("[WARN] No samples captured; nothing to save")
+        logger.warning("No samples captured; nothing to save")
         return
     out_path.parent.mkdir(parents=True, exist_ok=True)
     df = pd.DataFrame([asdict(s) for s in samples])
@@ -104,7 +126,7 @@ def save_samples(samples: List[ServeSample], out_path: pathlib.Path):
         df.to_csv(out_path, index=False)
     else:
         df.to_parquet(out_path, index=False)
-    print(f"[OK] Saved {len(samples)} samples to {out_path}")
+    logger.info(f"Saved {len(samples)} samples to {out_path}")
 
 
 def parse_args() -> argparse.Namespace:
@@ -118,13 +140,20 @@ def parse_args() -> argparse.Namespace:
 
 
 def main():
+    """Main entry point with Windows BLE support."""
+    # Initialize Windows-compatible event loop
+    setup_windows_event_loop()
+    
+    # Initialize COM threading on Windows (safe on other platforms)
+    init_windows_com_threading()
+    
     args = parse_args()
     try:
         address = args.address or asyncio.run(find_device(args.name))
         samples = asyncio.run(collect(address, args.duration, args.label))
         save_samples(samples, args.out)
     except Exception as exc:
-        print(f"[ERR] {exc}", file=sys.stderr)
+        logger.error(f"{exc}", exc_info=True)
         sys.exit(1)
 
 
