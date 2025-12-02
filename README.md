@@ -20,7 +20,9 @@ Repository Layout
 - `firmware/serve_sense_logger/` – PlatformIO project derived from `MW_DataCollection`; streams accel/gyro over BLE and/or USB at 100 Hz with serve-segment markers.
 - `firmware/serve_sense_classifier/` – Skeleton inference app based on the Magic Wand classifier. Hook in a converted TFLM model once trained.
 - `python/` – Desktop tooling:
+  - `gui/` – **NEW**: Modern PySide6-based GUI for real-time visualization and data collection (see `python/gui/README.md`)
   - `collect_ble.py` – BLE central logger using `bleak`, writes NDJSON/Parquet.
+  - `live_view.py` – Matplotlib-based live IMU visualization (legacy).
   - `segment_serves.py` – Simple peak/pause segmentation utilities.
   - `train_baseline.py` – Scikit-learn + TensorFlow starter for experimenting with classical models before quantization.
 - `notebooks/` – Colab-ready exploratory data analysis and model prototyping.
@@ -30,6 +32,29 @@ Repository Layout
 
 Getting Started
 ---------------
+
+### Quick Start with GUI (Recommended)
+
+1. Install Python dependencies:
+   ```bash
+   cd python
+   pip install -r requirements.txt
+   ```
+
+2. Launch the GUI application:
+   ```bash
+   python run_gui.py
+   ```
+   
+3. Use the GUI to:
+   - Scan and connect to your Serve Sense device
+   - View real-time 3D racket orientation and IMU data
+   - Record labeled serve sessions with one-click controls
+   - Export data in JSON Lines format for analysis
+
+For detailed GUI documentation, see `python/gui/README.md`.
+
+### Alternative: Command-Line Tools
 
 1. Install PlatformIO Core (`pip install platformio`) and ESP-IDF environment if not already set up for Magic Wand.
 2. From `firmware/serve_sense_logger`, run `pio run -t upload` to flash the logger.
