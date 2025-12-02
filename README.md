@@ -40,6 +40,11 @@ Getting Started
    cd python
    pip install -r requirements.txt
    ```
+   
+   **Windows users**: Also install pywin32 for proper BLE support:
+   ```bash
+   pip install pywin32
+   ```
 
 2. Launch the GUI application:
    ```bash
@@ -53,6 +58,17 @@ Getting Started
    - Export data in JSON Lines format for analysis
 
 For detailed GUI documentation, see `python/gui/README.md`.
+
+### Windows BLE Compatibility
+
+The project now includes full Windows 10/11 BLE support with proper COM threading:
+
+- **Automatic Windows detection**: Event loop and COM threading configured automatically
+- **Robust connection handling**: Retry logic with exponential backoff
+- **Better error messages**: Windows-specific troubleshooting guidance
+- **Thread-safe operations**: Proper separation of BLE and GUI operations
+
+If you encounter BLE connection issues on Windows, ensure you have `pywin32` installed.
 
 ### Alternative: Command-Line Tools
 

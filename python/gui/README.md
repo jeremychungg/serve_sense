@@ -56,12 +56,23 @@ cd python
 pip install -r requirements.txt
 ```
 
+#### Windows-Specific Setup
+
+On Windows, for proper BLE operation, you need to install additional dependencies for COM threading support:
+
+```bash
+pip install pywin32
+```
+
+This enables proper Windows COM initialization which is required for BLE operations on Windows 10/11.
+
 Key dependencies:
 - PySide6 >= 6.6.0
 - PySide6-Addons >= 6.6.0
 - matplotlib >= 3.8.0
 - bleak == 0.22.2
 - numpy >= 1.26.0
+- pywin32 >= 306 (Windows only)
 
 ## Usage
 
@@ -157,10 +168,17 @@ python/gui/
 
 ### Threading Model
 
-The application uses Qt's threading model:
+The application uses Qt's threading model with Windows compatibility:
 - **Main Thread**: UI updates and user interactions
-- **BLE Thread**: Async BLE operations using asyncio
+- **BLE Thread**: Async BLE operations using asyncio with Windows-safe event loop
 - **Signals/Slots**: Thread-safe communication between threads
+- **Windows COM**: Proper initialization in BLE worker thread for Windows compatibility
+
+The BLE worker thread:
+1. Initializes Windows COM threading (apartment-threaded) on Windows
+2. Configures WindowsProactorEventLoopPolicy for proper async operation
+3. Runs BLE operations in isolated async context
+4. Communicates with GUI thread via Qt signals
 
 ### Integration with Existing Code
 
@@ -195,12 +213,41 @@ The GUI reuses key components from the existing codebase:
 
 ## Troubleshooting
 
+### Windows BLE Connection Issues
+
+**Error: "Thread is configured for Windows GUI but callbacks are not working"**
+
+This error occurs when Windows COM threading is not properly initialized. The fix is:
+
+1. Install pywin32:
+   ```bash
+   pip install pywin32
+   ```
+
+2. The GUI now automatically handles:
+   - Windows COM initialization (COINIT_APARTMENTTHREADED)
+   - WindowsProactorEventLoopPolicy configuration
+   - Proper thread separation between GUI and BLE operations
+
+3. If issues persist:
+   - Ensure your Bluetooth adapter drivers are up to date
+   - Try restarting the application
+   - Check Windows Bluetooth settings (Settings → Devices → Bluetooth)
+   - Verify the device is not paired but not connected
+
+**Other Windows-Specific Issues:**
+
+- **Slow scanning**: Windows BLE discovery can be slower than other platforms. Wait at least 5 seconds.
+- **Connection timeout**: The application now includes automatic retry with exponential backoff.
+- **Device not found**: Use Device Manager to verify your Bluetooth adapter is working correctly.
+
 ### BLE Connection Issues
 
 - Ensure Bluetooth is enabled on your system
 - Make sure the Serve Sense device is powered on
 - Try scanning again if device is not found
 - Check device is not connected to another application
+- On Windows, ensure pywin32 is installed for proper BLE support
 
 ### Plot Performance
 
