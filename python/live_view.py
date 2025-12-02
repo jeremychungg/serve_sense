@@ -14,16 +14,26 @@ This script:
 
 import argparse
 import asyncio
+import datetime as dt
+import json
 import math
+import pathlib
 import struct
 import sys
+import threading
 from collections import deque
-from typing import Deque, Tuple
+from typing import Deque, List, Optional, Tuple
 
+import matplotlib
+matplotlib.use('TkAgg')  # Use TkAgg backend for better threading support
 import matplotlib.pyplot as plt
+import matplotlib.patches as mpatches
 import numpy as np
 from bleak import BleakClient, BleakScanner
 from matplotlib.animation import FuncAnimation
+from matplotlib.widgets import Button, RadioButtons
+
+from serve_labels import SERVE_LABELS, get_label_display_name
 
 IMU_UUID = "0000ff01-0000-1000-8000-00805f9b34fb"
 CTRL_UUID = "0000ff02-0000-1000-8000-00805f9b34fb"
@@ -38,6 +48,8 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--address", help="BLE MAC address (skip discovery)")
     p.add_argument("--name", default="ServeSense", help="Name hint for discovery")
     p.add_argument("--history", type=int, default=300, help="Samples of history to plot")
+    p.add_argument("--out-dir", type=pathlib.Path, default=pathlib.Path("../data/sessions"),
+                   help="Directory to save recorded sessions")
     return p.parse_args()
 
 
@@ -80,18 +92,29 @@ class OrientationFilter:
         return self.roll, self.pitch, yaw
 
 
-async def run_viewer(address: str, history: int):
+async def run_viewer(address: str, history: int, out_dir: pathlib.Path):
     # Shared state between BLE callback and matplotlib animation
     accel_hist: Deque[Tuple[float, float, float]] = deque(maxlen=history)
     gyro_hist: Deque[Tuple[float, float, float]] = deque(maxlen=history)
     latest_rpy = {"roll": 0.0, "pitch": 0.0, "yaw": 0.0}
+    reconnect_flag = {"requested": False}
+    
+    # Recording state
+    recording_state = {
+        "active": False,
+        "file": None,
+        "session_id": 0,
+        "samples": [],
+        "current_label": SERVE_LABELS[0],  # Default to first label
+        "lock": threading.Lock()  # Lock for thread-safe file writing
+    }
 
     filt = OrientationFilter()
 
     def handle_notify(_, data: bytearray):
         if len(data) != PACKET_STRUCT.size:
             return
-        _, _, _, ax, ay, az, gx, gy, gz, flags = PACKET_STRUCT.unpack(data)
+        millis, session, seq, ax, ay, az, gx, gy, gz, flags = PACKET_STRUCT.unpack(data)
 
         # Update orientation estimate
         r, p, y = filt.update(ax, ay, az, gx, gy, gz)
@@ -99,104 +122,249 @@ async def run_viewer(address: str, history: int):
 
         accel_hist.append((ax, ay, az))
         gyro_hist.append((gx, gy, gz))
+        
+        # Record sample if recording is active
+        if recording_state["active"]:
+            sample = {
+                "timestamp_ms": millis,
+                "session": session,
+                "sequence": seq,
+                "ax": float(ax), "ay": float(ay), "az": float(az),
+                "gx": float(gx), "gy": float(gy), "gz": float(gz),
+                "flags": int(flags),
+                "capture_on": bool(flags & 0x01),
+                "marker_edge": bool(flags & 0x02),
+                "label": recording_state["current_label"]  # Include selected label
+            }
+            recording_state["samples"].append(sample)
+            
+            # Write sample-by-sample to file (append JSON lines format, thread-safe)
+            with recording_state["lock"]:
+                if recording_state["file"] and recording_state["active"]:
+                    json_line = json.dumps(sample) + "\n"
+                    recording_state["file"].write(json_line)
+                    recording_state["file"].flush()
 
-    async with BleakClient(address) as client:
-        if not client.is_connected:
-            raise RuntimeError("Failed to connect")
-        print(f"[BLE] Connected to {address}")
+    plt.ion()
+    fig = plt.figure(figsize=(10, 7))
+    ax3d = fig.add_subplot(221, projection="3d")
+    ax_acc = fig.add_subplot(222)
+    ax_gyr = fig.add_subplot(212)
 
-        await client.start_notify(IMU_UUID, handle_notify)
-        # Turn capture on
-        try:
-            await client.write_gatt_char(CTRL_UUID, bytes([0x01]), response=True)
-        except Exception as e:
-            print(f"[WARN] Failed to send start command: {e}", file=sys.stderr)
+    # Reserve area below plots for buttons and label selector
+    btn_reconnect_ax = fig.add_axes([0.01, 0.01, 0.12, 0.05])
+    btn_record_ax = fig.add_axes([0.14, 0.01, 0.12, 0.05])
+    label_display_ax = fig.add_axes([0.27, 0.01, 0.35, 0.05])
+    label_display_ax.axis("off")
+    
+    btn_reconnect = Button(btn_reconnect_ax, "Reconnect")
+    btn_record = Button(btn_record_ax, "Record")
+    
+    # Label selector using radio buttons (compact)
+    label_radio_ax = fig.add_axes([0.63, 0.01, 0.36, 0.25])
+    label_radio_ax.axis("off")
+    
+    # Create radio buttons for label selection
+    display_labels = [get_label_display_name(label) for label in SERVE_LABELS]
+    radio = RadioButtons(label_radio_ax, display_labels, active=0)
+    
+    def on_label_change(label_display):
+        # Find the internal label from display name
+        for internal_label, display_name in zip(SERVE_LABELS, display_labels):
+            if display_name == label_display:
+                recording_state["current_label"] = internal_label
+                # Update label display text
+                label_display_ax.clear()
+                label_display_ax.axis("off")
+                label_display_ax.text(0.5, 0.5, f"Label: {label_display}", 
+                                     ha="center", va="center", fontsize=9, 
+                                     bbox=dict(boxstyle="round", facecolor="lightblue"))
+                print(f"[LABEL] Selected: {internal_label} ({label_display})")
+                break
+    
+    radio.on_clicked(on_label_change)
+    
+    # Initial label display
+    label_display_ax.text(0.5, 0.5, f"Label: {display_labels[0]}", 
+                         ha="center", va="center", fontsize=9,
+                         bbox=dict(boxstyle="round", facecolor="lightblue"))
 
-        # Set up matplotlib figure
-        plt.ion()
-        fig = plt.figure(figsize=(8, 6))
-        ax3d = fig.add_subplot(221, projection="3d")
-        ax_acc = fig.add_subplot(222)
-        ax_gyr = fig.add_subplot(212)
+    def on_reconnect(_event):
+        print("[VIEW] Reconnect requested")
+        reconnect_flag["requested"] = True
 
-        # Initial racket line in body frame: from origin to (0, 0, 1)
-        racket_line, = ax3d.plot([0, 0], [0, 0], [0, 1], lw=3)
+    def on_record(_event):
+        if not recording_state["active"]:
+            # Start recording
+            if not recording_state["current_label"]:
+                print("[ERR] Please select a label before recording", file=sys.stderr)
+                return
+            out_dir.mkdir(parents=True, exist_ok=True)
+            timestamp = dt.datetime.now().strftime("%Y%m%d_%H%M%S")
+            label_suffix = recording_state["current_label"].replace("_", "-")
+            filename = out_dir / f"serve_{label_suffix}_{timestamp}.jsonl"
+            recording_state["file"] = open(filename, "w")
+            recording_state["active"] = True
+            recording_state["session_id"] += 1
+            recording_state["samples"] = []
+            label_display = get_label_display_name(recording_state["current_label"])
+            btn_record.label.set_text("Stop")
+            print(f"[REC] Recording started: {filename}")
+            print(f"[REC] Label: {label_display} ({recording_state['current_label']})")
+        else:
+            # Stop recording (thread-safe)
+            with recording_state["lock"]:
+                if recording_state["file"]:
+                    recording_state["file"].close()
+                    recording_state["file"] = None
+            recording_state["active"] = False
+            btn_record.label.set_text("Record")
+            num_samples = len(recording_state["samples"])
+            label_display = get_label_display_name(recording_state["current_label"])
+            print(f"[REC] Recording stopped: {num_samples} samples saved")
+            print(f"[REC] Label: {label_display}")
 
-        for a in (ax_acc, ax_gyr):
-            a.grid(True, alpha=0.3)
+    btn_reconnect.on_clicked(on_reconnect)
+    btn_record.on_clicked(on_record)
 
-        ax_acc.set_title("Accel (g)")
-        ax_gyr.set_title("Gyro (dps)")
+    # Initial racket line in body frame: from origin to (0, 0, 1)
+    racket_line, = ax3d.plot([0, 0], [0, 0], [0, 1], lw=3)
 
-        def update_plot(_frame):
-            # 3D orientation
-            r, p, y = latest_rpy["roll"], latest_rpy["pitch"], latest_rpy["yaw"]
+    for a in (ax_acc, ax_gyr):
+        a.grid(True, alpha=0.3)
 
-            # Rotation matrices (ZYX)
-            cr, sr = math.cos(r), math.sin(r)
-            cp, sp = math.cos(p), math.sin(p)
-            cy, sy = math.cos(y), math.sin(y)
+    ax_acc.set_title("Accel (g)")
+    ax_gyr.set_title("Gyro (dps)")
 
-            Rz = np.array([[cy, -sy, 0], [sy, cy, 0], [0, 0, 1]])
-            Ry = np.array([[cp, 0, sp], [0, 1, 0], [-sp, 0, cp]])
-            Rx = np.array([[1, 0, 0], [0, cr, -sr], [0, sr, cr]])
-            R = Rz @ Ry @ Rx
+    async def connect_and_stream(current_address: str):
+        nonlocal racket_line
+        async with BleakClient(current_address) as client:
+            if not client.is_connected:
+                raise RuntimeError("Failed to connect")
+            print(f"[BLE] Connected to {current_address}")
 
-            body_vec = np.array([0, 0, 1.0])
-            world_vec = R @ body_vec
-
-            racket_line.set_data([0, world_vec[0]], [0, world_vec[1]])
-            racket_line.set_3d_properties([0, world_vec[2]])
-
-            ax3d.set_xlim(-1, 1)
-            ax3d.set_ylim(-1, 1)
-            ax3d.set_zlim(-1, 1)
-            ax3d.set_xlabel("X")
-            ax3d.set_ylabel("Y")
-            ax3d.set_zlabel("Z")
-            ax3d.set_title("Racket orientation (approx.)")
-
-            # Time-series plots
-            if accel_hist:
-                arr_a = np.array(accel_hist)
-                ax_acc.clear()
-                ax_acc.plot(arr_a[:, 0], label="ax")
-                ax_acc.plot(arr_a[:, 1], label="ay")
-                ax_acc.plot(arr_a[:, 2], label="az")
-                ax_acc.legend(loc="upper right")
-                ax_acc.set_ylim(-4, 4)
-                ax_acc.set_title("Accel (g)")
-                ax_acc.grid(True, alpha=0.3)
-
-            if gyro_hist:
-                arr_g = np.array(gyro_hist)
-                ax_gyr.clear()
-                ax_gyr.plot(arr_g[:, 0], label="gx")
-                ax_gyr.plot(arr_g[:, 1], label="gy")
-                ax_gyr.plot(arr_g[:, 2], label="gz")
-                ax_gyr.legend(loc="upper right")
-                ax_gyr.set_ylim(-500, 500)
-                ax_gyr.set_title("Gyro (dps)")
-                ax_gyr.grid(True, alpha=0.3)
-
-            plt.tight_layout()
-            return racket_line,
-
-        ani = FuncAnimation(fig, update_plot, interval=33)  # ~30 FPS
-
-        print("[VIEW] Close the window or Ctrl+C in terminal to exit.")
-        try:
-            while plt.fignum_exists(fig.number):
-                plt.pause(0.05)
-                await asyncio.sleep(0.05)
-        except KeyboardInterrupt:
-            print("\n[VIEW] Stopping...")
-        finally:
+            await client.start_notify(IMU_UUID, handle_notify)
+            # Turn capture on
             try:
-                await client.write_gatt_char(CTRL_UUID, bytes([0x00]), response=True)
-            except Exception:
-                pass
-            await client.stop_notify(IMU_UUID)
+                await client.write_gatt_char(CTRL_UUID, bytes([0x01]), response=True)
+            except Exception as e:
+                print(f"[WARN] Failed to send start command: {e}", file=sys.stderr)
+
+            def update_plot(_frame):
+                # 3D orientation
+                r, p, y = latest_rpy["roll"], latest_rpy["pitch"], latest_rpy["yaw"]
+
+                # Rotation matrices (ZYX)
+                cr, sr = math.cos(r), math.sin(r)
+                cp, sp = math.cos(p), math.sin(p)
+                cy, sy = math.cos(y), math.sin(y)
+
+                Rz = np.array([[cy, -sy, 0], [sy, cy, 0], [0, 0, 1]])
+                Ry = np.array([[cp, 0, sp], [0, 1, 0], [-sp, 0, cp]])
+                Rx = np.array([[1, 0, 0], [0, cr, -sr], [0, sr, cr]])
+                R = Rz @ Ry @ Rx
+
+                body_vec = np.array([0, 0, 1.0])
+                world_vec = R @ body_vec
+
+                racket_line.set_data([0, world_vec[0]], [0, world_vec[1]])
+                racket_line.set_3d_properties([0, world_vec[2]])
+
+                ax3d.set_xlim(-1, 1)
+                ax3d.set_ylim(-1, 1)
+                ax3d.set_zlim(-1, 1)
+                ax3d.set_xlabel("X")
+                ax3d.set_ylabel("Y")
+                ax3d.set_zlabel("Z")
+                ax3d.set_title("Racket orientation (approx.)")
+
+                # Time-series plots
+                if accel_hist:
+                    arr_a = np.array(accel_hist)
+                    ax_acc.clear()
+                    ax_acc.plot(arr_a[:, 0], label="ax")
+                    ax_acc.plot(arr_a[:, 1], label="ay")
+                    ax_acc.plot(arr_a[:, 2], label="az")
+                    ax_acc.legend(loc="upper right")
+                    ax_acc.set_ylim(-4, 4)
+                    ax_acc.set_title("Accel (g)")
+                    ax_acc.grid(True, alpha=0.3)
+
+                if gyro_hist:
+                    arr_g = np.array(gyro_hist)
+                    ax_gyr.clear()
+                    ax_gyr.plot(arr_g[:, 0], label="gx")
+                    ax_gyr.plot(arr_g[:, 1], label="gy")
+                    ax_gyr.plot(arr_g[:, 2], label="gz")
+                    ax_gyr.legend(loc="upper right")
+                    ax_gyr.set_ylim(-500, 500)
+                    ax_gyr.set_title("Gyro (dps)")
+                    ax_gyr.grid(True, alpha=0.3)
+
+                plt.tight_layout()
+                return racket_line,
+
+            ani = FuncAnimation(fig, update_plot, interval=33, blit=False)  # ~30 FPS
+
+            print("[VIEW] Close the window or use the button to reconnect.")
+            try:
+                # Use a simpler loop that doesn't block
+                while plt.fignum_exists(fig.number) and not reconnect_flag["requested"]:
+                    await asyncio.sleep(0.1)  # Check less frequently
+            except KeyboardInterrupt:
+                print("\n[VIEW] Stopping...")
+            finally:
+                reconnect_flag["requested"] = reconnect_flag["requested"] and plt.fignum_exists(fig.number)
+                # Stop recording if active (thread-safe)
+                if recording_state["active"]:
+                    recording_state["active"] = False
+                    with recording_state["lock"]:
+                        if recording_state["file"]:
+                            recording_state["file"].close()
+                            recording_state["file"] = None
+                try:
+                    await client.write_gatt_char(CTRL_UUID, bytes([0x00]), response=True)
+                except Exception:
+                    pass
+                await client.stop_notify(IMU_UUID)
+                if ani:
+                    ani.event_source.stop()
+
+    # Run async BLE loop in a separate thread
+    async def run_ble_loop():
+        current_address = address
+        while plt.fignum_exists(fig.number):
+            reconnect_flag["requested"] = False
+            try:
+                await connect_and_stream(current_address)
+            except Exception as e:
+                print(f"[BLE] Connection error: {e}", file=sys.stderr)
+                reconnect_flag["requested"] = False
+
+            if not plt.fignum_exists(fig.number):
+                break
+
+            if reconnect_flag["requested"]:
+                print("[VIEW] Attempting to reconnect...")
+                # Optionally re-discover if original address was not provided
+                if not current_address:
+                    try:
+                        current_address = await find_device("ServeSense")
+                    except Exception as e:
+                        print(f"[BLE] Rediscovery failed: {e}", file=sys.stderr)
+                        break
+            else:
+                break
+    
+    # Start BLE loop in background thread
+    def run_async():
+        asyncio.run(run_ble_loop())
+    
+    ble_thread = threading.Thread(target=run_async, daemon=True)
+    ble_thread.start()
+    
+    # Show the plot (this blocks until window is closed)
+    plt.show()
 
 
 def main():
@@ -206,7 +374,7 @@ def main():
             address = args.address
         else:
             address = asyncio.run(find_device(args.name))
-        asyncio.run(run_viewer(address, args.history))
+        run_viewer(address, args.history, args.out_dir)
     except Exception as e:
         print(f"[ERR] {e}", file=sys.stderr)
         sys.exit(1)

@@ -7,8 +7,9 @@
 // ============================================================
 constexpr uint8_t PIN_I2C_SDA   = 5;   // D4 on XIAO ESP32S3
 constexpr uint8_t PIN_I2C_SCL   = 6;   // D5 on XIAO ESP32S3
-constexpr uint8_t PIN_STATUS_LED = 21; // built-in RGB green channel
 constexpr uint8_t PIN_CAPTURE_BTN = 0; // BOOT button (active low)
+constexpr uint8_t PIN_RECORD_SWITCH = D1; // D1 on XIAO ESP32S3 (switch: ON=LOW starts recording, with pullup)
+constexpr uint8_t PIN_STATUS_LED = 21; // Built-in LED on XIAO ESP32S3
 
 constexpr uint8_t ICM20600_ADDR = 0x69;
 
@@ -118,12 +119,11 @@ class ServerCallbacks : public NimBLEServerCallbacks {
 class ControlCallbacks : public NimBLECharacteristicCallbacks {
   void onWrite(NimBLECharacteristic* c) override {
     auto value = c->getValue();
-    if (value.empty()) return;
+    if (value.length() == 0) return;
     uint8_t cmd = value[0];
     switch (cmd) {
       case 0x00: // stop
         captureEnabled = false;
-        digitalWrite(PIN_STATUS_LED, LOW);
         Serial.println("[CTRL] capture OFF");
         break;
       case 0x01: // start new session
@@ -131,7 +131,6 @@ class ControlCallbacks : public NimBLECharacteristicCallbacks {
         serveMarker    = true; // mark boundary
         sessionId++;
         sampleSerial   = 0;
-        digitalWrite(PIN_STATUS_LED, HIGH);
         Serial.printf("[CTRL] capture ON (session %u)\r\n", sessionId);
         break;
       case 0x02: // toggle marker
@@ -156,7 +155,6 @@ void IRAM_ATTR onButtonFalling() {
     sampleSerial = 0;
   }
   serveMarker = true;
-  digitalWrite(PIN_STATUS_LED, captureEnabled ? HIGH : LOW);
 }
 
 // ============================================================
@@ -164,14 +162,19 @@ void IRAM_ATTR onButtonFalling() {
 // ============================================================
 void setup() {
   pinMode(PIN_CAPTURE_BTN, INPUT_PULLUP);
+  pinMode(PIN_RECORD_SWITCH, INPUT_PULLUP); // Switch: LOW = ON (closed to GND/right), HIGH = OFF (open or VCC/left)
   pinMode(PIN_STATUS_LED, OUTPUT);
-  digitalWrite(PIN_STATUS_LED, LOW);
+  digitalWrite(PIN_STATUS_LED, LOW); // Start with LED off
 
   attachInterrupt(digitalPinToInterrupt(PIN_CAPTURE_BTN), onButtonFalling, FALLING);
 
   Serial.begin(115200);
-  while (!Serial && millis() < 3000) delay(10);
-  Serial.println("\n[BOOT] Serve Sense logger");
+  // Don't block waiting for USB serial so device can run from LiPo without a host.
+  delay(500);  // Give USB time to initialize
+  Serial.println("\n========================================");
+  Serial.println("[BOOT] Serve Sense logger");
+  Serial.println("========================================");
+  Serial.flush();
 
   Wire.begin(PIN_I2C_SDA, PIN_I2C_SCL, 400000);
   uint8_t who = 0;
@@ -208,6 +211,19 @@ void setup() {
   adv->start();
 
   Serial.println("[BLE] Advertising as ServeSense");
+  
+  // Check initial switch state and set LED accordingly
+  bool initialSwitchState = digitalRead(PIN_RECORD_SWITCH) == LOW;
+  if (initialSwitchState) {
+    captureEnabled = true;
+    sessionId = 1;
+    sampleSerial = 0;
+    digitalWrite(PIN_STATUS_LED, HIGH); // LED ON when recording
+    Serial.println("[SWITCH] Initial state: ON (recording active)");
+  } else {
+    digitalWrite(PIN_STATUS_LED, LOW); // LED OFF when not recording
+    Serial.println("[SWITCH] Initial state: OFF (idle)");
+  }
 }
 
 // ============================================================
@@ -215,42 +231,93 @@ void setup() {
 // ============================================================
 void loop() {
   static uint32_t lastSampleMs = 0;
+  static bool lastSwitchState = false;
+  static uint32_t lastSwitchCheckMs = 0;
+  static uint32_t lastHeartbeatMs = 0;
+  
   uint32_t now = millis();
+  
+  // Heartbeat every 2 seconds to show we're alive
+  if (now - lastHeartbeatMs >= 2000) {
+    lastHeartbeatMs = now;
+    int pinValue = digitalRead(PIN_RECORD_SWITCH);
+    bool switchState = pinValue == HIGH;
+    Serial.printf("[HEARTBEAT] D1 pin=%d, Switch=%s, Recording=%s, Session=%u\r\n",
+                  pinValue,
+                  switchState ? "ON" : "OFF",
+                  captureEnabled ? "YES" : "NO",
+                  sessionId);
+    Serial.flush();
+  }
+  
+  // Check switch state every 50ms (debounce)
+  if (now - lastSwitchCheckMs >= 50) {
+    lastSwitchCheckMs = now;
+    int pinValue = digitalRead(PIN_RECORD_SWITCH);
+    // Try both: if left=VCC and right=GND, switch might connect middle to either side
+    // If switch connects middle to left (VCC) when ON: HIGH = ON
+    // If switch connects middle to right (GND) when ON: LOW = ON
+    // Let's try LOW = ON first (switch connects to GND/right when ON)
+    bool switchOn = pinValue == LOW;
+    
+    // Detect switch transitions
+    if (switchOn && !lastSwitchState) {
+      // Switch turned ON: start recording
+      captureEnabled = true;
+      sessionId++;
+      sampleSerial = 0;
+      serveMarker = true;
+      digitalWrite(PIN_STATUS_LED, LOW); // Turn LED ON when recording
+      Serial.printf("[SWITCH] Recording STARTED (session %u)\r\n", sessionId);
+      Serial.flush();
+    } else if (!switchOn && lastSwitchState) {
+      // Switch turned OFF: stop recording
+      captureEnabled = false;
+      digitalWrite(PIN_STATUS_LED, HIGH); // Turn LED OFF when not recording
+      Serial.println("[SWITCH] Recording STOPPED");
+      Serial.flush();
+    }
+    
+    lastSwitchState = switchOn;
+  }
+  
+  // Only sample IMU at the configured rate
   if (now - lastSampleMs < SAMPLE_PERIOD_MS) {
     delay(1);
     return;
   }
   lastSampleMs = now;
 
+  // Read IMU (always, so we're ready when switch turns on)
   float ax, ay, az, gx, gy, gz;
   if (!icmRead(ax, ay, az, gx, gy, gz)) {
-    Serial.println("[IMU] read failed");
+    if (captureEnabled) {
+      Serial.println("[IMU] read failed");
+    }
     return;
   }
 
-  // Print CSV for quick debugging even when BLE disconnected.
-  Serial.printf("t=%lu,%u,%u,%.4f,%.4f,%.4f,%.4f,%.4f,%.4f,%u\r\n",
-                now, sessionId, sampleSerial, ax, ay, az, gx, gy, gz, captureEnabled ? 1 : 0);
+  // Only print to monitor and send BLE when recording is enabled
+  if (captureEnabled) {
+    // Print CSV to monitor
+    Serial.printf("t=%lu,%u,%u,%.4f,%.4f,%.4f,%.4f,%.4f,%.4f,%u\r\n",
+                  now, sessionId, sampleSerial, ax, ay, az, gx, gy, gz, 1);
 
-  if (!captureEnabled && !serveMarker) {
-    return; // skip BLE churn when idle
+    ServePacket pkt{};
+    pkt.millis_ms = now;
+    pkt.session   = sessionId;
+    pkt.sequence  = sampleSerial++;
+    pkt.ax = ax; pkt.ay = ay; pkt.az = az;
+    pkt.gx = gx; pkt.gy = gy; pkt.gz = gz;
+    pkt.flags = 0x01 | (serveMarker ? 0x02 : 0x00); // capture always on when here
+
+    serveMarker = false;
+
+    // Send BLE if connected
+    if (NimBLEDevice::getServer()->getConnectedCount() > 0) {
+      imuChar->setValue(reinterpret_cast<uint8_t*>(&pkt), sizeof(pkt));
+      imuChar->notify();
+    }
   }
-
-  ServePacket pkt{};
-  pkt.millis_ms = now;
-  pkt.session   = sessionId;
-  pkt.sequence  = sampleSerial++;
-  pkt.ax = ax; pkt.ay = ay; pkt.az = az;
-  pkt.gx = gx; pkt.gy = gy; pkt.gz = gz;
-  pkt.flags = (captureEnabled ? 0x01 : 0x00) | (serveMarker ? 0x02 : 0x00);
-
-  serveMarker = false;
-
-  if (NimBLEDevice::getServer()->getConnectedCount() == 0) {
-    return;
-  }
-
-  imuChar->setValue(reinterpret_cast<uint8_t*>(&pkt), sizeof(pkt));
-  imuChar->notify();
 }
 

@@ -1,13 +1,19 @@
 """
 Train a baseline Serve Sense classifier from collected parquet/csv logs.
 
+Supports 9-class classification:
+  - flat_good_mechanics, flat_low_toss, flat_low_racket_speed
+  - slice_good_mechanics, slice_low_toss, slice_low_racket_speed
+  - kick_good_mechanics, kick_low_toss, kick_low_racket_speed
+
 Example:
-  python train_baseline.py --data data/sessions/ --out models/
+  python train_baseline.py --data data/labeling/serves.json --out models/
 """
 
 from __future__ import annotations
 
 import argparse
+import json
 import pathlib
 from typing import List, Tuple
 
@@ -16,55 +22,113 @@ import pandas as pd
 import tensorflow as tf
 from sklearn.model_selection import train_test_split
 
+from serve_labels import SERVE_LABELS, get_label_display_name, is_valid_label, normalize_label
+
 FEATURE_COLS = ["ax", "ay", "az", "gx", "gy", "gz"]
 
 
 def load_sessions(path: pathlib.Path) -> pd.DataFrame:
+    """Load data from JSON (combined recordings) or parquet/csv files."""
+    if path.is_file() and path.suffix == ".json":
+        # Load from combined JSON file (output of combine_recordings.py)
+        with open(path, "r") as f:
+            data = json.load(f)
+        
+        rows = []
+        for serve in data["serves"]:
+            if not serve.get("label"):
+                continue  # Skip unlabeled serves
+            label = normalize_label(serve["label"])
+            if not is_valid_label(label):
+                print(f"[WARN] Skipping serve {serve['serve_id']} with invalid label: {serve['label']}")
+                continue
+            
+            for sample in serve["samples"]:
+                rows.append({
+                    "session": serve["session"],
+                    "serve_id": serve["serve_id"],
+                    "timestamp_ms": sample["timestamp_ms"],
+                    "sequence": sample["sequence"],
+                    "ax": sample["ax"], "ay": sample["ay"], "az": sample["az"],
+                    "gx": sample["gx"], "gy": sample["gy"], "gz": sample["gz"],
+                    "label": label,
+                    "capture_on": 1,
+                    "marker_edge": 0  # Markers already used for segmentation
+                })
+        
+        df = pd.DataFrame(rows)
+        if df.empty:
+            raise ValueError("No labeled serves found in JSON file.")
+        return df
+    
+    # Legacy: load from parquet/csv files
     files: List[pathlib.Path] = []
     if path.is_file():
         files = [path]
     else:
         files = sorted(path.glob("**/*.parquet")) + sorted(path.glob("**/*.csv"))
     if not files:
-        raise FileNotFoundError(f"No parquet/csv files under {path}")
+        raise FileNotFoundError(f"No parquet/csv/json files under {path}")
     frames = []
     for f in files:
         if f.suffix == ".csv":
             frames.append(pd.read_csv(f))
-        else:
+        elif f.suffix == ".parquet":
             frames.append(pd.read_parquet(f))
     df = pd.concat(frames, ignore_index=True)
     if "label" not in df.columns:
         raise ValueError("Dataset is missing 'label' column. Add labels before training.")
+    
+    # Validate and normalize labels
+    df["label"] = df["label"].apply(lambda x: normalize_label(x) if is_valid_label(str(x)) else None)
+    invalid = df["label"].isna().sum()
+    if invalid > 0:
+        print(f"[WARN] Found {invalid} samples with invalid labels, removing...")
+        df = df[df["label"].notna()].copy()
+    
     return df
 
 
 def segment_serves(df: pd.DataFrame, window_size: int) -> Tuple[np.ndarray, np.ndarray]:
+    """Segment serves by serve_id (from JSON) or marker_edge (from parquet/csv)."""
     segments: List[np.ndarray] = []
     labels: List[str] = []
 
-    current: List[List[float]] = []
-    current_label: List[str] = []
+    # Check if we have serve_id column (from JSON format)
+    if "serve_id" in df.columns:
+        # Group by serve_id
+        for serve_id, group in df.groupby("serve_id"):
+            if group["label"].isna().all():
+                continue  # Skip unlabeled serves
+            label = group["label"].iloc[0]  # All samples in a serve have same label
+            features = group[[col for col in FEATURE_COLS]].values
+            if len(features) > 0:
+                segments.append(resample_segment(features, window_size))
+                labels.append(label)
+    else:
+        # Legacy: segment by marker_edge
+        current: List[List[float]] = []
+        current_label: List[str] = []
 
-    for _, row in df.iterrows():
-        if row["marker_edge"] == 1 and current:
+        for _, row in df.iterrows():
+            if row.get("marker_edge", 0) == 1 and current:
+                segments.append(resample_segment(np.array(current), window_size))
+                labels.append(majority_label(current_label))
+                current = []
+                current_label = []
+
+            if row.get("capture_on", 0) == 0:
+                continue
+
+            current.append([row[col] for col in FEATURE_COLS])
+            current_label.append(row.get("label", "unknown"))
+
+        if current:
             segments.append(resample_segment(np.array(current), window_size))
             labels.append(majority_label(current_label))
-            current = []
-            current_label = []
-
-        if row["capture_on"] == 0:
-            continue
-
-        current.append([row[col] for col in FEATURE_COLS])
-        current_label.append(row.get("label", "unknown"))
-
-    if current:
-        segments.append(resample_segment(np.array(current), window_size))
-        labels.append(majority_label(current_label))
 
     if not segments:
-        raise RuntimeError("No serve segments detected. Check marker_edge values.")
+        raise RuntimeError("No serve segments detected. Check data format and labels.")
 
     return np.stack(segments), np.array(labels)
 
@@ -130,12 +194,28 @@ def main():
     df = load_sessions(args.data)
     X, y_raw = segment_serves(df, args.window)
 
-    label_to_id = {label: idx for idx, label in enumerate(sorted(set(y_raw)))}
+    # Create label mapping (sorted for consistency)
+    unique_labels = sorted(set(y_raw))
+    label_to_id = {label: idx for idx, label in enumerate(unique_labels)}
     y = np.array([label_to_id[label] for label in y_raw])
+
+    print(f"\n[INFO] Found {len(unique_labels)} class(es):")
+    for label in unique_labels:
+        count = np.sum(y_raw == label)
+        print(f"  - {label} ({get_label_display_name(label)}): {count} serves")
+    
+    # Warn if not all 9 classes are present
+    missing = set(SERVE_LABELS) - set(unique_labels)
+    if missing:
+        print(f"\n[WARN] Missing classes: {missing}")
+        print(f"       Model will have {len(unique_labels)} outputs instead of 9")
 
     X_train, X_test, y_train, y_test = train_test_split(
         X, y, test_size=args.test_split, stratify=y, random_state=42
     )
+
+    print(f"\n[INFO] Training on {len(X_train)} serves, testing on {len(X_test)} serves")
+    print(f"[INFO] Window size: {args.window}, Features: {len(FEATURE_COLS)}")
 
     model = build_model(args.window, len(FEATURE_COLS), len(label_to_id))
     history = model.fit(
@@ -147,13 +227,13 @@ def main():
     )
 
     test_loss, test_acc = model.evaluate(X_test, y_test, verbose=0)
-    print(f"[METRIC] test_acc={test_acc:.3f}  test_loss={test_loss:.3f}")
+    print(f"\n[METRIC] test_acc={test_acc:.3f}  test_loss={test_loss:.3f}")
 
     export_tflite(model, args.out)
 
     # Save label map for firmware decoding
     label_map_path = args.out.with_suffix(".labels.txt")
-    label_map_path.write_text("\n".join(f"{idx},{label}" for label, idx in label_to_id.items()))
+    label_map_path.write_text("\n".join(f"{idx},{label}" for label, idx in sorted(label_to_id.items(), key=lambda x: x[1])))
     print(f"[OK] Saved label map to {label_map_path}")
 
 
