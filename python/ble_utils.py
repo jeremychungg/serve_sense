@@ -20,7 +20,6 @@ Usage:
 import asyncio
 import logging
 import sys
-import time
 from typing import Optional, List, Tuple
 
 from bleak import BleakScanner, BleakClient
@@ -66,7 +65,7 @@ def init_windows_com_threading():
         return True
     except ImportError:
         logger.warning(
-            "pythoncom not available. Install pywin32: pip install pywin32"
+            "pythoncom not available on Windows. Install pywin32: pip install pywin32"
         )
         return False
     except Exception as e:

@@ -7,12 +7,13 @@ actual BLE hardware.
 """
 
 import asyncio
+import pathlib
 import sys
 import unittest
 from unittest.mock import Mock, patch, AsyncMock
 
-# Add current directory to path
-sys.path.insert(0, str(__file__.rsplit('/', 1)[0]))
+# Add current directory to path using pathlib for cross-platform compatibility
+sys.path.insert(0, str(pathlib.Path(__file__).parent))
 
 from ble_utils import (
     setup_windows_event_loop,
