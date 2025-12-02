@@ -559,7 +559,9 @@ class ServeSenseGUI(QMainWindow):
     @Slot(str, str)
     def on_device_found(self, address: str, name: str):
         """Handle device found during scan."""
-        self.device_combo.addItem(f"{name} ({address})", address)
+        display_name = name if name else "(unnamed device)"
+        # Show as "Name - MAC" to make it easier to identify
+        self.device_combo.addItem(f"{display_name} - {address}", address)
         self.connect_btn.setEnabled(True)
     
     @Slot()

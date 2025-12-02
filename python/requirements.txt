@@ -11,7 +11,7 @@ omegaconf>=2.3.0
 PySide6>=6.6.0
 PySide6-Addons>=6.6.0
 
-# Windows-specific dependencies for BLE COM threading support
-# Install with: pip install pywin32  (Windows only)
-# pywin32>=306  # Uncomment on Windows for proper COM threading
+# Windows-specific dependencies for BLE support
+# Required on Windows for bleak to function properly
+pywin32>=306  # Required on Windows
 

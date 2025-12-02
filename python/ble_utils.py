@@ -47,30 +47,20 @@ def init_windows_com_threading():
     """
     Initialize Windows COM threading for BLE operations.
     
-    This function initializes COM in apartment-threaded mode which is
-    required for proper BLE operations on Windows. Should be called
-    once per thread that performs BLE operations.
+    NOTE: Modern versions of bleak (0.20+) handle COM initialization internally.
+    Manually calling pythoncom.CoInitializeEx() can cause conflicts with asyncio.
+    This function is kept for backward compatibility but is now a no-op.
     
     Safe to call on non-Windows platforms (no-op).
-    Returns True if initialized, False if not needed or failed.
+    Returns True if on Windows, False otherwise.
     """
     if sys.platform != "win32":
         return False
     
-    try:
-        import pythoncom
-        # Initialize COM in apartment-threaded mode
-        pythoncom.CoInitializeEx(pythoncom.COINIT_APARTMENTTHREADED)
-        logger.info("Windows COM initialized (COINIT_APARTMENTTHREADED)")
-        return True
-    except ImportError:
-        logger.warning(
-            "pythoncom not available on Windows. Install pywin32: pip install pywin32"
-        )
-        return False
-    except Exception as e:
-        logger.warning(f"Failed to initialize COM threading: {e}")
-        return False
+    # Modern bleak versions handle COM initialization automatically
+    # Manual initialization can cause "Thread is configured for Windows GUI but callbacks are not working"
+    logger.info("Windows detected - COM initialization handled by bleak")
+    return True
 
 
 async def discover_device_with_retry(
@@ -150,10 +140,10 @@ async def scan_devices(timeout: float = 5.0) -> List[Tuple[str, str]]:
         
         result = []
         for dev in devices:
-            if dev.name:
-                result.append((dev.address, dev.name))
+            name = dev.name if dev.name else "(unnamed device)"
+            result.append((dev.address, name))
         
-        logger.info(f"[BLE] Found {len(result)} named devices")
+        logger.info(f"[BLE] Found {len(result)} devices (including unnamed)")
         return result
         
     except Exception as e:

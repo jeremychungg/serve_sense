@@ -74,8 +74,46 @@ def parse_args() -> argparse.Namespace:
 
 async def find_device(name_hint: str) -> str:
     """Find BLE device with retry logic (Windows-compatible)."""
-    logger.info(f"[BLE] Scanning for devices matching '{name_hint}'...")
-    return await discover_device_with_retry(name_hint, timeout=5.0, max_retries=3)
+    from ble_utils import scan_devices
+    
+    logger.info(f"[BLE] Scanning for all BLE devices...")
+    devices = await scan_devices(timeout=10.0)
+    
+    if not devices:
+        raise RuntimeError("No BLE devices found")
+    
+    # First try to find device by name
+    for address, name in devices:
+        if name and name_hint.lower() in name.lower():
+            logger.info(f"[BLE] Found {name} @ {address}")
+            return address
+    
+    # If not found by name, list all devices and let user choose
+    print("\n" + "="*70)
+    print("ServeSense not found by name. Available BLE devices:")
+    print("="*70)
+    for i, (address, name) in enumerate(devices, 1):
+        display_name = name if name else "(unnamed device)"
+        print(f"  {i:2d}. {display_name:30s} - {address}")
+    print("="*70)
+    
+    while True:
+        try:
+            choice = input("\nSelect device number (or 'q' to quit): ").strip()
+            if choice.lower() == 'q':
+                raise RuntimeError("User cancelled")
+            idx = int(choice) - 1
+            if 0 <= idx < len(devices):
+                address, name = devices[idx]
+                display_name = name if name else "(unnamed device)"
+                logger.info(f"[BLE] Selected: {display_name} @ {address}")
+                return address
+            else:
+                print(f"Invalid selection. Please choose 1-{len(devices)}")
+        except ValueError:
+            print("Invalid input. Please enter a number or 'q'")
+        except (EOFError, KeyboardInterrupt):
+            raise RuntimeError("User cancelled")
 
 
 class OrientationFilter:
@@ -394,19 +432,24 @@ def main():
     # Initialize Windows-compatible event loop for main thread
     setup_windows_event_loop()
     
-    # Initialize COM threading on Windows (safe on other platforms)
-    init_windows_com_threading()
-    
     args = parse_args()
-    try:
-        if args.address:
-            address = args.address
-        else:
-            address = asyncio.run(find_device(args.name))
-        run_viewer(address, args.history, args.out_dir)
-    except Exception as e:
-        logger.error(f"{e}", exc_info=True)
-        sys.exit(1)
+    
+    async def async_main():
+        """Async main function."""
+        try:
+            if args.address:
+                address = args.address
+                logger.info(f"[BLE] Using provided address: {address}")
+            else:
+                address = await find_device(args.name)
+            
+            await run_viewer(address, args.history, args.out_dir)
+        except Exception as e:
+            logger.error(f"{e}", exc_info=True)
+            sys.exit(1)
+    
+    # Run the async main
+    asyncio.run(async_main())
 
 
 if __name__ == "__main__":
