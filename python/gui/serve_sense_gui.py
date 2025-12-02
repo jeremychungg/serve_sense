@@ -21,9 +21,7 @@ import math
 import pathlib
 import struct
 import sys
-import threading
-from collections import deque
-from typing import Deque, Optional, Tuple
+from typing import Tuple
 
 import numpy as np
 from PySide6.QtCore import (
@@ -38,7 +36,6 @@ from PySide6.QtWidgets import (
 from PySide6.QtGui import QAction, QKeySequence, QFont
 from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg as FigureCanvas
 from matplotlib.figure import Figure
-import matplotlib.pyplot as plt
 from bleak import BleakClient, BleakScanner
 
 # Add parent directory to path to import serve_labels
