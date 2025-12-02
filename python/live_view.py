@@ -10,12 +10,18 @@ This script:
   - Subscribes to the IMU notify characteristic.
   - Runs a simple complementary filter to estimate orientation.
   - Renders a live 3D 'racket' and time-series plots of accel/gyro.
+  
+Windows Compatibility:
+  - Uses proper event loop configuration for Windows
+  - Handles COM threading initialization
+  - Separates BLE operations from matplotlib thread
 """
 
 import argparse
 import asyncio
 import datetime as dt
 import json
+import logging
 import math
 import pathlib
 import struct
@@ -34,6 +40,19 @@ from matplotlib.animation import FuncAnimation
 from matplotlib.widgets import Button, RadioButtons
 
 from serve_labels import SERVE_LABELS, get_label_display_name
+from ble_utils import (
+    setup_windows_event_loop,
+    init_windows_com_threading,
+    discover_device_with_retry,
+    BLEConnectionManager
+)
+
+# Configure logging
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+)
+logger = logging.getLogger(__name__)
 
 IMU_UUID = "0000ff01-0000-1000-8000-00805f9b34fb"
 CTRL_UUID = "0000ff02-0000-1000-8000-00805f9b34fb"
@@ -54,13 +73,9 @@ def parse_args() -> argparse.Namespace:
 
 
 async def find_device(name_hint: str) -> str:
-    print(f"[BLE] Scanning for devices matching '{name_hint}'...")
-    devices = await BleakScanner.discover(timeout=5.0)
-    for d in devices:
-        if d.name and name_hint.lower() in d.name.lower():
-            print(f"[BLE] Found {d.name} @ {d.address}")
-            return d.address
-    raise RuntimeError(f"No BLE device found matching '{name_hint}'")
+    """Find BLE device with retry logic (Windows-compatible)."""
+    logger.info(f"[BLE] Scanning for devices matching '{name_hint}'...")
+    return await discover_device_with_retry(name_hint, timeout=5.0, max_retries=3)
 
 
 class OrientationFilter:
@@ -237,18 +252,17 @@ async def run_viewer(address: str, history: int, out_dir: pathlib.Path):
     ax_gyr.set_title("Gyro (dps)")
 
     async def connect_and_stream(current_address: str):
+        """Connect and stream with Windows-compatible BLE handling."""
         nonlocal racket_line
-        async with BleakClient(current_address) as client:
-            if not client.is_connected:
-                raise RuntimeError("Failed to connect")
-            print(f"[BLE] Connected to {current_address}")
+        async with BLEConnectionManager(current_address) as client:
+            logger.info(f"[BLE] Connected to {current_address}")
 
             await client.start_notify(IMU_UUID, handle_notify)
             # Turn capture on
             try:
                 await client.write_gatt_char(CTRL_UUID, bytes([0x01]), response=True)
             except Exception as e:
-                print(f"[WARN] Failed to send start command: {e}", file=sys.stderr)
+                logger.warning(f"Failed to send start command: {e}")
 
             def update_plot(_frame):
                 # 3D orientation
@@ -306,13 +320,13 @@ async def run_viewer(address: str, history: int, out_dir: pathlib.Path):
 
             ani = FuncAnimation(fig, update_plot, interval=33, blit=False)  # ~30 FPS
 
-            print("[VIEW] Close the window or use the button to reconnect.")
+            logger.info("[VIEW] Close the window or use the button to reconnect.")
             try:
                 # Use a simpler loop that doesn't block
                 while plt.fignum_exists(fig.number) and not reconnect_flag["requested"]:
                     await asyncio.sleep(0.1)  # Check less frequently
             except KeyboardInterrupt:
-                print("\n[VIEW] Stopping...")
+                logger.info("\n[VIEW] Stopping...")
             finally:
                 reconnect_flag["requested"] = reconnect_flag["requested"] and plt.fignum_exists(fig.number)
                 # Stop recording if active (thread-safe)
@@ -330,34 +344,42 @@ async def run_viewer(address: str, history: int, out_dir: pathlib.Path):
                 if ani:
                     ani.event_source.stop()
 
-    # Run async BLE loop in a separate thread
+    # Run async BLE loop in a separate thread with Windows-compatible event loop
     async def run_ble_loop():
+        """BLE loop with proper Windows event loop handling."""
+        # Initialize COM threading for this thread on Windows
+        if sys.platform == "win32":
+            init_windows_com_threading()
+        
         current_address = address
         while plt.fignum_exists(fig.number):
             reconnect_flag["requested"] = False
             try:
                 await connect_and_stream(current_address)
             except Exception as e:
-                print(f"[BLE] Connection error: {e}", file=sys.stderr)
+                logger.error(f"Connection error: {e}", exc_info=True)
                 reconnect_flag["requested"] = False
 
             if not plt.fignum_exists(fig.number):
                 break
 
             if reconnect_flag["requested"]:
-                print("[VIEW] Attempting to reconnect...")
+                logger.info("[VIEW] Attempting to reconnect...")
                 # Optionally re-discover if original address was not provided
                 if not current_address:
                     try:
                         current_address = await find_device("ServeSense")
                     except Exception as e:
-                        print(f"[BLE] Rediscovery failed: {e}", file=sys.stderr)
+                        logger.error(f"Rediscovery failed: {e}")
                         break
             else:
                 break
     
-    # Start BLE loop in background thread
+    # Start BLE loop in background thread with proper event loop
     def run_async():
+        """Run async BLE loop with Windows-compatible event loop."""
+        # Set up Windows event loop policy for this thread
+        setup_windows_event_loop()
         asyncio.run(run_ble_loop())
     
     ble_thread = threading.Thread(target=run_async, daemon=True)
@@ -368,6 +390,13 @@ async def run_viewer(address: str, history: int, out_dir: pathlib.Path):
 
 
 def main():
+    """Main entry point with Windows BLE support."""
+    # Initialize Windows-compatible event loop for main thread
+    setup_windows_event_loop()
+    
+    # Initialize COM threading on Windows (safe on other platforms)
+    init_windows_com_threading()
+    
     args = parse_args()
     try:
         if args.address:
@@ -376,7 +405,7 @@ def main():
             address = asyncio.run(find_device(args.name))
         run_viewer(address, args.history, args.out_dir)
     except Exception as e:
-        print(f"[ERR] {e}", file=sys.stderr)
+        logger.error(f"{e}", exc_info=True)
         sys.exit(1)
 
 
