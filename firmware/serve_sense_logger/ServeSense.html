@@ -1,0 +1,708 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>ServeSense – Tennis Serve Analyzer</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+  <style>
+    * { box-sizing: border-box; }
+    body {
+      font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+      margin: 0;
+      padding: 24px;
+      background: #f5f5f7;
+      color: #222;
+    }
+    h1 {
+      margin: 0 0 8px;
+      font-size: 1.8rem;
+      font-weight: 600;
+    }
+    .subtitle {
+      margin-bottom: 16px;
+      color: #555;
+      font-size: 0.95rem;
+    }
+    .card {
+      background: #fff;
+      border-radius: 10px;
+      box-shadow: 0 1px 3px rgba(0,0,0,0.1);
+      padding: 16px 18px;
+      margin-bottom: 16px;
+    }
+    .card h2 {
+      margin: 0 0 10px;
+      font-size: 1.2rem;
+      font-weight: 600;
+    }
+    .row {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 10px;
+      align-items: center;
+      margin-bottom: 10px;
+    }
+    button {
+      border: none;
+      border-radius: 999px;
+      padding: 8px 16px;
+      font-size: 0.95rem;
+      font-weight: 500;
+      cursor: pointer;
+      background: #2563eb;
+      color: #fff;
+    }
+    button.secondary {
+      background: #6b7280;
+    }
+    button.danger {
+      background: #dc2626;
+    }
+    button.success {
+      background: #16a34a;
+    }
+    button:disabled {
+      opacity: 0.5;
+      cursor: not-allowed;
+    }
+    select, input[type="text"] {
+      padding: 6px 10px;
+      border-radius: 6px;
+      border: 1px solid #d4d4d8;
+      font-size: 0.95rem;
+      min-width: 110px;
+    }
+    #status {
+      font-weight: 600;
+      font-size: 0.95rem;
+    }
+    #status.ok {
+      color: #16a34a;
+    }
+    #status.bad {
+      color: #dc2626;
+    }
+    #debug {
+      font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, "Roboto Mono", monospace;
+      font-size: 0.8rem;
+      background: #f3f4f6;
+      border-radius: 6px;
+      padding: 8px;
+      max-height: 180px;
+      overflow-y: auto;
+      border: 1px solid #e5e7eb;
+      white-space: pre-wrap;
+    }
+    #liveCanvas {
+      background: #f3f4f6;
+      border-radius: 8px;
+      border: 1px solid #e5e7eb;
+    }
+    .viz-container {
+      display: flex;
+      gap: 16px;
+      align-items: flex-start;
+    }
+    #racketContainer {
+      background: #f3f4f6;
+      border-radius: 8px;
+      border: 1px solid #e5e7eb;
+      flex-shrink: 0;
+    }
+    .badge {
+      display: inline-block;
+      padding: 2px 10px;
+      border-radius: 999px;
+      font-size: 0.8rem;
+      background: #e5e7eb;
+      color: #374151;
+      font-weight: 500;
+    }
+    .badge.recording {
+      background: #dc2626;
+      color: white;
+      animation: pulse 1.5s ease-in-out infinite;
+    }
+    @keyframes pulse {
+      0%, 100% { opacity: 1; }
+      50% { opacity: 0.6; }
+    }
+    .list {
+      max-height: 260px;
+      overflow-y: auto;
+      border: 1px solid #e5e7eb;
+      border-radius: 6px;
+      padding: 6px;
+      background: #f9fafb;
+      font-size: 0.85rem;
+    }
+    .item {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      padding: 6px 4px;
+      border-bottom: 1px solid #e5e7eb;
+    }
+    .item:last-child {
+      border-bottom: none;
+    }
+    .label-pill {
+      padding: 2px 10px;
+      border-radius: 999px;
+      background: #dbeafe;
+      color: #1d4ed8;
+      font-weight: 500;
+      font-size: 0.8rem;
+    }
+  </style>
+</head>
+<body>
+  <h1>ServeSense – Tennis Serve Analyzer</h1>
+  <div class="subtitle">
+    Connect to your <strong>ServeSense</strong> board and record tennis serves.
+    Use the physical switch on D1 to control recording.
+  </div>
+
+  <!-- Connection card -->
+  <div class="card">
+    <h2>1. Device Connection</h2>
+    <div class="row">
+      <button id="btnConnect">Connect to ServeSense</button>
+      <button id="btnDisconnect" class="secondary">Disconnect</button>
+      <span id="status" class="bad">Not Connected</span>
+    </div>
+    <div id="debug">[log] Ready. Click "Connect to ServeSense".</div>
+  </div>
+
+  <!-- Recording card -->
+  <div class="card">
+    <h2>2. Record Tennis Serves</h2>
+    <div class="row">
+      <label for="labelSelect" style="font-weight:500;">Training Label:</label>
+      <select id="labelSelect">
+        <option value="good-serve">Good Serve</option>
+        <option value="low-speed">Low Speed</option>
+        <option value="short-swing">Short Swing</option>
+        <option value="jerky-motion">Jerky Motion</option>
+      </select>
+      <span id="recordInfo" class="badge">Use physical switch on D1 to record</span>
+      <span id="sessionInfo" class="badge">Session: 0, Samples: 0</span>
+    </div>
+    <div style="margin-top:10px;">
+      <div class="viz-container">
+        <div style="text-align:center;">
+          <div id="racketContainer"></div>
+        </div>
+        <div style="text-align:center;">
+          <canvas id="liveCanvas" width="600" height="300"></canvas>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Summary / export -->
+  <div class="card">
+    <h2>3. Recorded Sessions</h2>
+    <div class="row">
+      <span id="summary" class="badge">0 sessions</span>
+      <button id="btnExport">Download servesense.json</button>
+      <button id="btnClear" class="danger">Clear All</button>
+    </div>
+    <div id="list" class="list"></div>
+  </div>
+
+<script>
+/* ==== CONFIG ==== */
+const DEVICE_NAME_PREFIX = "ServeSense";
+const SERVICE_UUID       = 0xFF00;
+const IMU_CHAR_UUID      = 0xFF01;  // notify: ServeSense packet
+const CTRL_CHAR_UUID     = 0xFF02;  // write: 0x01 start, 0x00 stop
+
+/* ==== BLE Globals ==== */
+let device  = null;
+let server  = null;
+let service = null;
+let imuChar = null;
+let ctrlChar = null;
+
+/* ==== Recording State ==== */
+let sessions = {};  // sessionId -> {sessionId, label, samples: [{millis, ax, ay, az, gx, gy, gz}]}
+let currentSession = null;
+let isRecording = false;
+let lastPacketTime = 0;
+let lastSessionId = null;
+let currentLabel = 'good-serve';
+
+/* ==== 3D Racket Visualization ==== */
+let scene, camera, renderer, racket;
+let racketHandle, racketHead, racketFrame;
+
+function init3DRacket() {
+  const container = document.getElementById('racketContainer');
+  
+  // Scene setup
+  scene = new THREE.Scene();
+  scene.background = new THREE.Color(0xf3f4f6);
+  
+  // Camera
+  camera = new THREE.PerspectiveCamera(50, 300/300, 0.1, 1000);
+  camera.position.set(3, 3, 5);
+  camera.lookAt(0, 0, 0);
+  
+  // Renderer
+  renderer = new THREE.WebGLRenderer({ antialias: true });
+  renderer.setSize(300, 300);
+  container.appendChild(renderer.domElement);
+  
+  // Lighting
+  const ambientLight = new THREE.AmbientLight(0xffffff, 0.6);
+  scene.add(ambientLight);
+  
+  const dirLight = new THREE.DirectionalLight(0xffffff, 0.8);
+  dirLight.position.set(5, 10, 7);
+  scene.add(dirLight);
+  
+  // Create racket group
+  racket = new THREE.Group();
+  
+  // Handle (grip) - shorter, extends along negative Y axis
+  const handleLength = 1.2;
+  const handleGeometry = new THREE.CylinderGeometry(0.08, 0.1, handleLength, 16);
+  const handleMaterial = new THREE.MeshPhongMaterial({ 
+    color: 0x1e40af,
+    shininess: 30 
+  });
+  racketHandle = new THREE.Mesh(handleGeometry, handleMaterial);
+  // Position handle so its top is at y = -0.3 (quarter of handle length below origin)
+  racketHandle.position.y = -0.3 - (handleLength / 2);
+  racket.add(racketHandle);
+  
+  // Neck (transition) - connects handle to head
+  const neckGeometry = new THREE.CylinderGeometry(0.06, 0.08, 0.3, 16);
+  const neckMaterial = new THREE.MeshPhongMaterial({ 
+    color: 0x1e40af,
+    shininess: 30 
+  });
+  const neck = new THREE.Mesh(neckGeometry, neckMaterial);
+  neck.position.y = -0.15;
+  racket.add(neck);
+  
+  // Head frame (oval using tube) - in XY plane (face parallel to handle)
+  const rx = 0.5, ry = 0.65;  // Oval dimensions (X is perpendicular to grip)
+  const curve = new THREE.EllipseCurve(
+    0, 0,
+    rx, ry,
+    0, 2 * Math.PI,
+    false,
+    0
+  );
+  
+  const points = curve.getPoints(64);
+  const path = new THREE.CatmullRomCurve3(
+    points.map(p => new THREE.Vector3(p.x, p.y, 0))
+  );
+  path.closed = true;
+  
+  const tubeGeometry = new THREE.TubeGeometry(path, 64, 0.035, 8, true);
+  const frameMaterial = new THREE.MeshPhongMaterial({ 
+    color: 0x1e40af,
+    shininess: 30 
+  });
+  racketFrame = new THREE.Mesh(tubeGeometry, frameMaterial);
+  racketFrame.position.y = 0.4;
+  racket.add(racketFrame);
+  
+  // Strings (mesh pattern) - in XY plane
+  const stringMaterial = new THREE.LineBasicMaterial({ color: 0x666666 });
+  
+  // Vertical strings (along Y direction)
+  for (let i = -5; i <= 5; i++) {
+    const x = (i / 5) * 0.45;
+    const points = [];
+    for (let j = -8; j <= 8; j++) {
+      const y = (j / 8) * 0.6;
+      // Check if inside oval
+      if ((x*x)/(rx*rx) + (y*y)/(ry*ry) <= 0.95) {
+        points.push(new THREE.Vector3(x, y, 0));
+      }
+    }
+    if (points.length > 1) {
+      const geometry = new THREE.BufferGeometry().setFromPoints(points);
+      const line = new THREE.Line(geometry, stringMaterial);
+      line.position.y = 0.4;
+      racket.add(line);
+    }
+  }
+  
+  // Horizontal strings (along X direction)
+  for (let i = -8; i <= 8; i++) {
+    const y = (i / 8) * 0.6;
+    const points = [];
+    for (let j = -5; j <= 5; j++) {
+      const x = (j / 5) * 0.45;
+      if ((x*x)/(rx*rx) + (y*y)/(ry*ry) <= 0.95) {
+        points.push(new THREE.Vector3(x, y, 0));
+      }
+    }
+    if (points.length > 1) {
+      const geometry = new THREE.BufferGeometry().setFromPoints(points);
+      const line = new THREE.Line(geometry, stringMaterial);
+      line.position.y = 0.4;
+      racket.add(line);
+    }
+  }
+  
+  scene.add(racket);
+  
+  // Initial render
+  renderer.render(scene, camera);
+}
+
+function update3DRacket(gx, gy, gz) {
+  if (!racket) return;
+  
+  // Apply gyroscope data to racket orientation
+  // Scale down the rotation for smoother visualization
+  const scale = 0.0005;
+  racket.rotation.x += gy * scale;
+  racket.rotation.y += gz * scale;
+  racket.rotation.z += gx * scale;
+  
+  // Render the scene
+  renderer.render(scene, camera);
+}
+
+/* ==== DOM Helpers ==== */
+const $ = sel => document.querySelector(sel);
+
+function log(msg) {
+  const d = new Date().toLocaleTimeString();
+  const el = $("#debug");
+  el.textContent += `\n[${d}] ${msg}`;
+  el.scrollTop = el.scrollHeight;
+}
+
+function setStatus(text, ok) {
+  const el = $("#status");
+  el.textContent = text;
+  el.className = ok ? "ok" : "bad";
+}
+
+function resetCanvas() {
+  const c = $("#liveCanvas");
+  const ctx = c.getContext("2d");
+  ctx.fillStyle = "#f3f4f6";
+  ctx.fillRect(0, 0, c.width, c.height);
+  
+  // Draw axes
+  ctx.strokeStyle = "#d1d5db";
+  ctx.lineWidth = 1;
+  ctx.beginPath();
+  ctx.moveTo(0, c.height/2);
+  ctx.lineTo(c.width, c.height/2);
+  ctx.stroke();
+  
+  // Add labels
+  ctx.fillStyle = "#6b7280";
+  ctx.font = "12px system-ui";
+  ctx.fillText("Acceleration (g)", 10, 15);
+  ctx.fillText("Gyroscope (°/s)", 10, c.height/2 + 15);
+}
+
+/* ==== BLE Connect / Disconnect ==== */
+async function connectBLE() {
+  try {
+    log("Requesting Bluetooth device…");
+    device = await navigator.bluetooth.requestDevice({
+      filters: [{ namePrefix: DEVICE_NAME_PREFIX }],
+      optionalServices: [SERVICE_UUID]
+    });
+
+    device.addEventListener("gattserverdisconnected", onDisconnected);
+    server  = await device.gatt.connect();
+    service = await server.getPrimaryService(SERVICE_UUID);
+    imuChar = await service.getCharacteristic(IMU_CHAR_UUID);
+    ctrlChar = await service.getCharacteristic(CTRL_CHAR_UUID);
+
+    await imuChar.startNotifications();
+    imuChar.addEventListener("characteristicvaluechanged", onIMUPacket);
+
+    // Send start stream command
+    try {
+      await ctrlChar.writeValue(new Uint8Array([1]));
+      log("Sent start-stream command");
+    } catch (e) {
+      log("Warning: Could not send start-stream: " + e.message);
+    }
+
+    setStatus(`Connected to ${device.name}`, true);
+    log(`Connected to ${device.name}`);
+    log("Waiting for data... Use physical switch to record.");
+    resetCanvas();
+  } catch (e) {
+    log("Connect failed: " + e.message);
+    setStatus("Not Connected", false);
+  }
+}
+
+function onDisconnected() {
+  log("Device disconnected.");
+  setStatus("Not Connected", false);
+  device = server = service = imuChar = ctrlChar = null;
+  isRecording = false;
+  updateRecordingUI();
+}
+
+async function disconnectBLE() {
+  if (device && device.gatt.connected) {
+    try {
+      await ctrlChar.writeValue(new Uint8Array([0]));
+      log("Sent stop-stream command");
+    } catch (e) {
+      log("Warning: Could not send stop-stream: " + e.message);
+    }
+    device.gatt.disconnect();
+  }
+}
+
+/* ==== IMU Packet Handler ==== */
+function onIMUPacket(event) {
+  const dv = new DataView(event.target.value.buffer);
+  const nBytes = dv.byteLength;
+
+  // ServeSense packet structure (37 bytes):
+  // uint32 millis, uint32 session, uint32 sequence,
+  // float ax, ay, az, gx, gy, gz, uint8 flags
+  if (nBytes < 37) {
+    log(`Warning: received ${nBytes} bytes, expected 37`);
+    return;
+  }
+
+  const millis_ms = dv.getUint32(0, true);
+  const sessionId = dv.getUint32(4, true);
+  const sequence = dv.getUint32(8, true);
+  const ax = dv.getFloat32(12, true);
+  const ay = dv.getFloat32(16, true);
+  const az = dv.getFloat32(20, true);
+  const gx = dv.getFloat32(24, true);
+  const gy = dv.getFloat32(28, true);
+  const gz = dv.getFloat32(32, true);
+  const flags = dv.getUint8(36);
+
+  const captureOn = (flags & 0x01) !== 0;
+  const marker = (flags & 0x02) !== 0;
+
+  lastPacketTime = Date.now();
+
+  // Update UI and log packet info for debugging
+  $("#sessionInfo").textContent = `Session: ${sessionId}, Samples: ${sequence + 1}, Capture: ${captureOn ? 'ON' : 'OFF'}`;
+  
+  // Debug log first few packets
+  if (sequence < 3) {
+    log(`Packet: session=${sessionId}, seq=${sequence}, flags=${flags}, captureOn=${captureOn}`);
+  }
+
+  // Check if session changed (new recording started)
+  if (lastSessionId !== null && sessionId !== lastSessionId) {
+    // Session changed - save the previous session
+    log(`Session ${lastSessionId} completed and saved (${sessions[lastSessionId]?.samples.length || 0} samples)`);
+    isRecording = false;
+    updateRecordingUI();
+    updateSummaryAndList();
+  }
+  
+  lastSessionId = sessionId;
+
+  if (!captureOn) {
+    // Not capturing, skip storing data
+    return;
+  }
+
+  // captureOn is true - start/continue recording
+  if (!isRecording) {
+    isRecording = true;
+    log(`Recording started: Session ${sessionId}`);
+    resetCanvas();
+    updateRecordingUI();
+  }
+
+  if (marker) {
+    log(`Marker set for session ${sessionId}`);
+  }
+
+  // Store data
+  if (!sessions[sessionId]) {
+    sessions[sessionId] = {
+      sessionId: sessionId,
+      label: currentLabel,
+      samples: []
+    };
+    log(`Session ${sessionId} labeled as: ${currentLabel}`);
+  }
+  currentSession = sessions[sessionId];
+  
+  currentSession.samples.push({
+    millis: millis_ms,
+    sequence: sequence,
+    ax, ay, az,
+    gx, gy, gz
+  });
+
+  updateRecordingUI();
+  drawLiveData(currentSession.samples);
+  
+  // Update 3D racket with latest gyro data
+  update3DRacket(gx, gy, gz);
+}
+
+function updateRecordingUI() {
+  const badge = $("#recordInfo");
+  if (isRecording) {
+    badge.textContent = "● RECORDING";
+    badge.className = "badge recording";
+  } else {
+    badge.textContent = "Use physical switch on D1 to record";
+    badge.className = "badge";
+  }
+}
+
+function drawLiveData(samples) {
+  if (samples.length < 2) return;
+  
+  const c = $("#liveCanvas");
+  const ctx = c.getContext("2d");
+  resetCanvas();
+  
+  const maxSamples = 200;  // Show last 200 samples
+  const startIdx = Math.max(0, samples.length - maxSamples);
+  const visibleSamples = samples.slice(startIdx);
+  
+  const w = c.width;
+  const h = c.height;
+  const midY = h / 2;
+  const topH = midY;
+  const botH = midY;
+  
+  const scaleAcc = 30;  // pixels per g
+  const scaleGyr = 0.3; // pixels per deg/s
+  
+  // Draw accel (top half)
+  drawSignal(ctx, visibleSamples, s => s.ax, w, topH, 0, scaleAcc, "#ef4444");
+  drawSignal(ctx, visibleSamples, s => s.ay, w, topH, 0, scaleAcc, "#3b82f6");
+  drawSignal(ctx, visibleSamples, s => s.az, w, topH, 0, scaleAcc, "#22c55e");
+  
+  // Draw gyro (bottom half)
+  drawSignal(ctx, visibleSamples, s => s.gx, w, botH, midY, scaleGyr, "#f59e0b");
+  drawSignal(ctx, visibleSamples, s => s.gy, w, botH, midY, scaleGyr, "#8b5cf6");
+  drawSignal(ctx, visibleSamples, s => s.gz, w, botH, midY, scaleGyr, "#ec4899");
+}
+
+function drawSignal(ctx, samples, valueFunc, width, height, yOffset, scale, color) {
+  if (samples.length < 2) return;
+  
+  ctx.strokeStyle = color;
+  ctx.lineWidth = 2;
+  ctx.beginPath();
+  
+  const n = samples.length;
+  samples.forEach((s, i) => {
+    const x = (i / (n - 1)) * width;
+    const val = valueFunc(s);
+    const y = yOffset + height/2 - val * scale;
+    
+    if (i === 0) {
+      ctx.moveTo(x, y);
+    } else {
+      ctx.lineTo(x, y);
+    }
+  });
+  
+  ctx.stroke();
+}
+
+function updateSummaryAndList() {
+  const sessionIds = Object.keys(sessions).sort((a, b) => b - a);
+  $("#summary").textContent = `${sessionIds.length} sessions`;
+
+  const list = $("#list");
+  if (sessionIds.length === 0) {
+    list.textContent = "No sessions recorded yet.";
+    return;
+  }
+
+  list.innerHTML = "";
+  sessionIds.forEach(sid => {
+    const s = sessions[sid];
+    const div = document.createElement("div");
+    div.className = "item";
+    div.innerHTML = `
+      <div>
+        <span class="label-pill">Session ${s.sessionId}</span>
+        <span style="margin-left:8px; padding:2px 8px; background:#dbeafe; color:#1d4ed8; border-radius:4px; font-size:0.75rem; font-weight:500;">
+          ${s.label || 'unlabeled'}
+        </span>
+        <span style="margin-left:8px; color:#6b7280;">
+          ${s.samples.length} samples
+        </span>
+      </div>
+      <button class="danger" style="padding:3px 10px; font-size:0.8rem;"
+        onclick="deleteSession(${sid})">Delete</button>`;
+    list.appendChild(div);
+  });
+}
+
+function deleteSession(sid) {
+  if (!confirm(`Delete session ${sid}?`)) return;
+  delete sessions[sid];
+  updateSummaryAndList();
+}
+
+function clearAll() {
+  if (!confirm("Clear ALL recorded sessions?")) return;
+  sessions = {};
+  currentSession = null;
+  updateSummaryAndList();
+  resetCanvas();
+  log("Cleared all sessions.");
+}
+
+/* ==== Export JSON ==== */
+function exportData() {
+  const sessionIds = Object.keys(sessions);
+  if (sessionIds.length === 0) {
+    alert("No sessions recorded.");
+    return;
+  }
+  
+  const data = {
+    sessions: sessionIds.map(sid => sessions[sid])
+  };
+  
+  const blob = new Blob([JSON.stringify(data, null, 2)], { type: "application/json" });
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(blob);
+  const date = new Date().toISOString().slice(0,10);
+  a.download = `servesense_${date}.json`;
+  a.click();
+  URL.revokeObjectURL(a.href);
+  log(`Exported ${sessionIds.length} sessions to JSON.`);
+}
+
+/* ==== Wire up UI ==== */
+$("#btnConnect").addEventListener("click", connectBLE);
+$("#btnDisconnect").addEventListener("click", disconnectBLE);
+$("#btnExport").addEventListener("click", exportData);
+$("#btnClear").addEventListener("click", clearAll);
+$("#labelSelect").addEventListener("change", (e) => {
+  currentLabel = e.target.value;
+  log(`Training label changed to: ${currentLabel}`);
+});
+
+setStatus("Not Connected", false);
+resetCanvas();
+updateSummaryAndList();
+init3DRacket();
+</script>
+</body>
+</html>

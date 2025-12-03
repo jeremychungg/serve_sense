@@ -1,0 +1,94 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <title>BLE Test - ServeSense</title>
+  <style>
+    body { font-family: monospace; padding: 20px; background: #1e1e1e; color: #d4d4d4; }
+    button { padding: 10px 20px; margin: 10px; font-size: 16px; cursor: pointer; }
+    #log { background: #000; padding: 10px; border: 1px solid #444; white-space: pre-wrap; }
+    .error { color: #ff6b6b; }
+    .success { color: #51cf66; }
+  </style>
+</head>
+<body>
+  <h1>ServeSense BLE Connection Test</h1>
+  <button onclick="testConnect()">🔍 Test Connection</button>
+  <button onclick="clearLog()">Clear Log</button>
+  <div id="log"></div>
+
+<script>
+const SERVICE_UUID = "0000ff00-0000-1000-8000-00805f9b34fb";
+let device = null;
+
+function log(msg, isError = false) {
+  const div = document.getElementById('log');
+  const timestamp = new Date().toLocaleTimeString();
+  const className = isError ? 'error' : 'success';
+  div.innerHTML += `<span class="${className}">[${timestamp}] ${msg}</span>\n`;
+  div.scrollTop = div.scrollHeight;
+  console.log(msg);
+}
+
+function clearLog() {
+  document.getElementById('log').innerHTML = '';
+}
+
+async function testConnect() {
+  try {
+    log('=== Starting BLE Connection Test ===');
+    
+    // Check if Bluetooth is available
+    if (!navigator.bluetooth) {
+      log('ERROR: Web Bluetooth not supported in this browser!', true);
+      log('Please use Chrome or Edge browser.', true);
+      return;
+    }
+    log('✓ Web Bluetooth API available');
+    
+    // Request device
+    log('Requesting Bluetooth device...');
+    device = await navigator.bluetooth.requestDevice({
+      filters: [{ namePrefix: 'ServeSense' }],
+      optionalServices: [SERVICE_UUID]
+    });
+    log(`✓ Device selected: ${device.name}`);
+    
+    // Connect to GATT server
+    log('Connecting to GATT server...');
+    const server = await device.gatt.connect();
+    log('✓ Connected to GATT server');
+    
+    // Get primary service
+    log('Getting service 0xFF00...');
+    const service = await server.getPrimaryService(SERVICE_UUID);
+    log('✓ Service found');
+    
+    // Get all characteristics
+    log('Discovering characteristics...');
+    const characteristics = await service.getCharacteristics();
+    log(`✓ Found ${characteristics.length} characteristics:`);
+    
+    for (const char of characteristics) {
+      log(`  - UUID: 0x${char.uuid.match(/0000([0-9a-f]{4})/i)[1].toUpperCase()}`);
+      log(`    Properties: ${char.properties.read ? 'READ ' : ''}${char.properties.write ? 'WRITE ' : ''}${char.properties.notify ? 'NOTIFY' : ''}`);
+    }
+    
+    log('\n=== SUCCESS! Device is fully accessible ===', false);
+    log('You can now close this and use the main collector.');
+    
+  } catch (error) {
+    log(`\nERROR: ${error.message}`, true);
+    log(`Error name: ${error.name}`, true);
+    log(`\nTroubleshooting:`, true);
+    if (error.name === 'NotFoundError') {
+      log('- Make sure device is powered on and advertising', true);
+      log('- Try resetting the device (press RESET button)', true);
+    } else if (error.name === 'SecurityError') {
+      log('- Make sure you are using HTTPS or localhost', true);
+      log('- Check browser Bluetooth permissions', true);
+    }
+  }
+}
+</script>
+</body>
+</html>
