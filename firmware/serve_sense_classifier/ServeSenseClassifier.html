@@ -1,0 +1,590 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>ServeSense Classifier</title>
+  <style>
+    * {
+      margin: 0;
+      padding: 0;
+      box-sizing: border-box;
+    }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+      background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+      color: #1f2937;
+      padding: 20px;
+      min-height: 100vh;
+    }
+    h1 {
+      text-align: center;
+      color: white;
+      margin-bottom: 8px;
+      font-size: 2.5rem;
+      text-shadow: 2px 2px 4px rgba(0,0,0,0.3);
+    }
+    .subtitle {
+      text-align: center;
+      color: #e0e7ff;
+      margin-bottom: 30px;
+      font-size: 1.1rem;
+    }
+    .container {
+      max-width: 1200px;
+      margin: 0 auto;
+    }
+    .card {
+      background: white;
+      border-radius: 12px;
+      padding: 24px;
+      margin-bottom: 20px;
+      box-shadow: 0 10px 30px rgba(0,0,0,0.2);
+    }
+    .card h2 {
+      color: #4f46e5;
+      margin-bottom: 16px;
+      font-size: 1.5rem;
+      border-bottom: 2px solid #e5e7eb;
+      padding-bottom: 8px;
+    }
+    .row {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      flex-wrap: wrap;
+      margin-bottom: 12px;
+    }
+    button {
+      padding: 10px 20px;
+      border: none;
+      border-radius: 6px;
+      font-size: 1rem;
+      font-weight: 600;
+      cursor: pointer;
+      transition: all 0.2s;
+      box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+    }
+    button:hover {
+      transform: translateY(-2px);
+      box-shadow: 0 4px 8px rgba(0,0,0,0.2);
+    }
+    button:active {
+      transform: translateY(0);
+    }
+    button:disabled {
+      opacity: 0.5;
+      cursor: not-allowed;
+      transform: none;
+    }
+    button.primary {
+      background: #4f46e5;
+      color: white;
+    }
+    button.primary:hover {
+      background: #4338ca;
+    }
+    button.secondary {
+      background: #6b7280;
+      color: white;
+    }
+    button.success {
+      background: #22c55e;
+      color: white;
+    }
+    button.danger {
+      background: #ef4444;
+      color: white;
+    }
+    .badge {
+      display: inline-block;
+      padding: 6px 12px;
+      border-radius: 6px;
+      font-size: 0.875rem;
+      font-weight: 600;
+    }
+    .badge.good {
+      background: #d1fae5;
+      color: #065f46;
+    }
+    .badge.bad {
+      background: #fee2e2;
+      color: #991b1b;
+    }
+    .badge.neutral {
+      background: #e5e7eb;
+      color: #374151;
+    }
+    .badge.recording {
+      background: #fecaca;
+      color: #991b1b;
+      animation: pulse 1.5s infinite;
+    }
+    @keyframes pulse {
+      0%, 100% { opacity: 1; }
+      50% { opacity: 0.6; }
+    }
+    #debug {
+      background: #f9fafb;
+      border: 1px solid #e5e7eb;
+      border-radius: 6px;
+      padding: 12px;
+      font-family: "Courier New", monospace;
+      font-size: 0.875rem;
+      max-height: 150px;
+      overflow-y: auto;
+      margin-top: 12px;
+      color: #374151;
+    }
+    .prediction-display {
+      text-align: center;
+      padding: 40px;
+      background: linear-gradient(135deg, #f3f4f6 0%, #e5e7eb 100%);
+      border-radius: 12px;
+      margin: 20px 0;
+    }
+    .prediction-display.good-serve {
+      background: linear-gradient(135deg, #22c55e 0%, #16a34a 100%);
+      color: white;
+    }
+    .prediction-display.jerky-motion {
+      background: linear-gradient(135deg, #ef4444 0%, #dc2626 100%);
+      color: white;
+    }
+    .prediction-display.lacks-pronation {
+      background: linear-gradient(135deg, #f59e0b 0%, #d97706 100%);
+      color: white;
+    }
+    .prediction-display.short-swing {
+      background: linear-gradient(135deg, #3b82f6 0%, #2563eb 100%);
+      color: white;
+    }
+    .prediction-display.unknown {
+      background: linear-gradient(135deg, #6b7280 0%, #4b5563 100%);
+      color: white;
+    }
+    .prediction-label {
+      font-size: 3rem;
+      font-weight: bold;
+      margin-bottom: 12px;
+      text-transform: uppercase;
+      letter-spacing: 2px;
+      text-shadow: 2px 2px 4px rgba(0,0,0,0.2);
+    }
+    .prediction-confidence {
+      font-size: 2rem;
+      font-weight: 600;
+      opacity: 0.9;
+    }
+    .confidence-bars {
+      margin-top: 20px;
+    }
+    .confidence-item {
+      margin-bottom: 16px;
+    }
+    .confidence-label {
+      display: flex;
+      justify-content: space-between;
+      margin-bottom: 6px;
+      font-weight: 600;
+      color: #374151;
+    }
+    .confidence-bar-bg {
+      background: #e5e7eb;
+      border-radius: 8px;
+      height: 28px;
+      overflow: hidden;
+      position: relative;
+    }
+    .confidence-bar-fill {
+      height: 100%;
+      border-radius: 8px;
+      transition: width 0.3s ease;
+      display: flex;
+      align-items: center;
+      justify-content: flex-end;
+      padding-right: 10px;
+      color: white;
+      font-weight: bold;
+      font-size: 0.875rem;
+    }
+    .confidence-bar-fill.good-serve {
+      background: linear-gradient(90deg, #22c55e 0%, #16a34a 100%);
+    }
+    .confidence-bar-fill.jerky-motion {
+      background: linear-gradient(90deg, #ef4444 0%, #dc2626 100%);
+    }
+    .confidence-bar-fill.lacks-pronation {
+      background: linear-gradient(90deg, #f59e0b 0%, #d97706 100%);
+    }
+    .confidence-bar-fill.short-swing {
+      background: linear-gradient(90deg, #3b82f6 0%, #2563eb 100%);
+    }
+    .recording-indicator {
+      display: inline-block;
+      width: 16px;
+      height: 16px;
+      border-radius: 50%;
+      background: #6b7280;
+      margin-right: 8px;
+    }
+    .recording-indicator.active {
+      background: #ef4444;
+      animation: pulse 1.5s infinite;
+    }
+    .stats-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+      gap: 16px;
+      margin-top: 16px;
+    }
+    .stat-card {
+      background: #f9fafb;
+      padding: 16px;
+      border-radius: 8px;
+      text-align: center;
+    }
+    .stat-value {
+      font-size: 2rem;
+      font-weight: bold;
+      color: #4f46e5;
+      margin-bottom: 4px;
+    }
+    .stat-label {
+      color: #6b7280;
+      font-size: 0.875rem;
+      text-transform: uppercase;
+      letter-spacing: 1px;
+    }
+  </style>
+</head>
+<body>
+  <h1>🎾 ServeSense Classifier</h1>
+  <div class="subtitle">
+    Real-time Tennis Serve Classification
+  </div>
+
+  <div class="container">
+    <!-- Connection card -->
+    <div class="card">
+      <h2>1. Device Connection</h2>
+      <div class="row">
+        <button id="btnConnect" class="primary">Connect to ServeSense</button>
+        <button id="btnDisconnect" class="secondary" disabled>Disconnect</button>
+        <span id="status" class="badge bad">Not Connected</span>
+      </div>
+      <div id="debug">[log] Ready. Click "Connect to ServeSense".</div>
+    </div>
+
+    <!-- Recording status card -->
+    <div class="card">
+      <h2>2. Recording Status</h2>
+      <div class="row">
+        <span class="recording-indicator" id="recordIndicator"></span>
+        <span id="recordStatus" class="badge neutral">Idle - Flip switch on D1 to record</span>
+      </div>
+      <div class="stats-grid">
+        <div class="stat-card">
+          <div class="stat-value" id="totalClassifications">0</div>
+          <div class="stat-label">Total Classifications</div>
+        </div>
+        <div class="stat-card">
+          <div class="stat-value" id="lastClassTime">--:--</div>
+          <div class="stat-label">Last Classification</div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Classification result card -->
+    <div class="card">
+      <h2>3. Classification Result</h2>
+      <div class="prediction-display" id="predictionDisplay">
+        <div class="prediction-label" id="predictionLabel">No Prediction Yet</div>
+        <div class="prediction-confidence" id="predictionConfidence">Flip switch to record a serve</div>
+      </div>
+    </div>
+
+    <!-- Confidence scores card -->
+    <div class="card">
+      <h2>4. Confidence Scores</h2>
+      <div class="confidence-bars">
+        <div class="confidence-item">
+          <div class="confidence-label">
+            <span>Good Serve</span>
+            <span id="conf-good-serve">0%</span>
+          </div>
+          <div class="confidence-bar-bg">
+            <div class="confidence-bar-fill good-serve" id="bar-good-serve" style="width: 0%"></div>
+          </div>
+        </div>
+        <div class="confidence-item">
+          <div class="confidence-label">
+            <span>Jerky Motion</span>
+            <span id="conf-jerky-motion">0%</span>
+          </div>
+          <div class="confidence-bar-bg">
+            <div class="confidence-bar-fill jerky-motion" id="bar-jerky-motion" style="width: 0%"></div>
+          </div>
+        </div>
+        <div class="confidence-item">
+          <div class="confidence-label">
+            <span>Lacks Pronation</span>
+            <span id="conf-lacks-pronation">0%</span>
+          </div>
+          <div class="confidence-bar-bg">
+            <div class="confidence-bar-fill lacks-pronation" id="bar-lacks-pronation" style="width: 0%"></div>
+          </div>
+        </div>
+        <div class="confidence-item">
+          <div class="confidence-label">
+            <span>Short Swing</span>
+            <span id="conf-short-swing">0%</span>
+          </div>
+          <div class="confidence-bar-bg">
+            <div class="confidence-bar-fill short-swing" id="bar-short-swing" style="width: 0%"></div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+<script>
+/* ==== CONFIG ==== */
+const DEVICE_NAME_PREFIX = "ServeSense";
+const SERVICE_UUID       = "0000ff00-0000-1000-8000-00805f9b34fb";
+const IMU_CHAR_UUID      = "0000ff01-0000-1000-8000-00805f9b34fb";
+const CTRL_CHAR_UUID     = "0000ff02-0000-1000-8000-00805f9b34fb";
+const SWITCH_CHAR_UUID   = "0000ff04-0000-1000-8000-00805f9b34fb";
+const RESULT_CHAR_UUID   = "0000ff05-0000-1000-8000-00805f9b34fb";
+
+/* ==== BLE Globals ==== */
+let device  = null;
+let server  = null;
+let service = null;
+let imuChar = null;
+let ctrlChar = null;
+let switchChar = null;
+let resultChar = null;
+
+/* ==== State ==== */
+let isRecording = false;
+let totalClassifications = 0;
+let classificationHistory = [];
+
+/* ==== Helper Functions ==== */
+const $ = (id) => document.getElementById(id);
+
+function log(msg) {
+  const debug = $("debug");
+  const timestamp = new Date().toLocaleTimeString();
+  debug.textContent = `[${timestamp}] ${msg}`;
+  console.log(msg);
+}
+
+function setStatus(text, connected) {
+  const status = $("status");
+  status.textContent = text;
+  status.className = connected ? "badge good" : "badge bad";
+}
+
+function setRecordingStatus(recording) {
+  isRecording = recording;
+  const indicator = $("recordIndicator");
+  const status = $("recordStatus");
+  
+  if (recording) {
+    indicator.classList.add("active");
+    status.textContent = "Recording... Flip switch to stop";
+    status.className = "badge recording";
+    log("Recording started");
+  } else {
+    indicator.classList.remove("active");
+    status.textContent = "Processing classification...";
+    status.className = "badge neutral";
+  }
+}
+
+function displayClassification(className, confidence) {
+  const display = $("predictionDisplay");
+  const label = $("predictionLabel");
+  const conf = $("predictionConfidence");
+  
+  // Format class name for display
+  const displayName = className.replace(/-/g, " ").toUpperCase();
+  
+  // Update main display
+  label.textContent = displayName;
+  conf.textContent = confidence.toFixed(1) + "% Confidence";
+  
+  // Update display styling based on class
+  display.className = "prediction-display " + className;
+  
+  // Update timestamp
+  const now = new Date();
+  $("lastClassTime").textContent = now.toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'});
+  
+  // Increment counter
+  totalClassifications++;
+  $("totalClassifications").textContent = totalClassifications;
+  
+  // Store in history
+  classificationHistory.push({
+    timestamp: now,
+    class: className,
+    confidence: confidence
+  });
+  
+  // Reset recording status
+  $("recordStatus").textContent = "Idle - Flip switch on D1 to record";
+  $("recordStatus").className = "badge neutral";
+  
+  log(`Classification: ${displayName} (${confidence.toFixed(1)}%)`);
+}
+
+function updateConfidenceBars(confidences) {
+  const classes = ['good-serve', 'jerky-motion', 'lacks-pronation', 'short-swing'];
+  
+  classes.forEach(cls => {
+    const conf = confidences[cls] || 0;
+    const bar = $(`bar-${cls}`);
+    const label = $(`conf-${cls}`);
+    
+    bar.style.width = conf + "%";
+    bar.textContent = conf.toFixed(1) + "%";
+    label.textContent = conf.toFixed(1) + "%";
+  });
+}
+
+function resetDisplay() {
+  const display = $("predictionDisplay");
+  const label = $("predictionLabel");
+  const conf = $("predictionConfidence");
+  
+  display.className = "prediction-display";
+  label.textContent = "No Prediction Yet";
+  conf.textContent = "Flip switch to record a serve";
+  
+  updateConfidenceBars({});
+  $("recordStatus").textContent = "Idle - Flip switch on D1 to record";
+  $("recordStatus").className = "badge neutral";
+}
+
+/* ==== BLE Functions ==== */
+async function connectBLE() {
+  try {
+    log("Requesting device...");
+    device = await navigator.bluetooth.requestDevice({
+      filters: [{ namePrefix: DEVICE_NAME_PREFIX }],
+      optionalServices: [SERVICE_UUID]
+    });
+
+    log(`Connecting to ${device.name}...`);
+    server = await device.gatt.connect();
+    
+    log("Getting service...");
+    service = await server.getPrimaryService(SERVICE_UUID);
+    
+    log("Getting characteristics...");
+    imuChar = await service.getCharacteristic(IMU_CHAR_UUID);
+    ctrlChar = await service.getCharacteristic(CTRL_CHAR_UUID);
+    switchChar = await service.getCharacteristic(SWITCH_CHAR_UUID);
+    resultChar = await service.getCharacteristic(RESULT_CHAR_UUID);
+    
+    // Subscribe to notifications
+    log("Subscribing to switch notifications...");
+    await switchChar.startNotifications();
+    switchChar.addEventListener("characteristicvaluechanged", handleSwitchNotification);
+    
+    log("Subscribing to result notifications...");
+    await resultChar.startNotifications();
+    resultChar.addEventListener("characteristicvaluechanged", handleResultNotification);
+    
+    // Send start stream command (matching logger protocol)
+    try {
+      await ctrlChar.writeValue(new Uint8Array([0x01]));
+      log("Sent start-stream command");
+    } catch (e) {
+      log("Warning: Could not send start-stream: " + e.message);
+    }
+    
+    setStatus("Connected", true);
+    $("btnConnect").disabled = true;
+    $("btnDisconnect").disabled = false;
+    log("✓ Connected! Ready to classify serves.");
+    
+  } catch (err) {
+    log(`ERROR: ${err.message}`);
+    console.error(err);
+  }
+}
+
+async function disconnectBLE() {
+  if (device && device.gatt.connected) {
+    try {
+      // Send stop stream command (matching logger protocol)
+      await ctrlChar.writeValue(new Uint8Array([0x00]));
+      log("Sent stop-stream command");
+    } catch (e) {
+      log("Warning: Could not send stop-stream: " + e.message);
+    }
+    await device.gatt.disconnect();
+  }
+  
+  device = null;
+  server = null;
+  service = null;
+  imuChar = null;
+  ctrlChar = null;
+  switchChar = null;
+  resultChar = null;
+  
+  setStatus("Not Connected", false);
+  $("btnConnect").disabled = false;
+  $("btnDisconnect").disabled = true;
+  resetDisplay();
+}
+
+function handleSwitchNotification(event) {
+  const value = event.target.value;
+  const state = value.getUint8(0);
+  
+  setRecordingStatus(state === 1);
+}
+
+function handleResultNotification(event) {
+  const value = event.target.value;
+  const decoder = new TextDecoder("utf-8");
+  const resultStr = decoder.decode(value);
+  
+  // Parse result: "class_name:conf1,conf2,conf3,conf4"
+  if (resultStr.includes(":")) {
+    const [className, confsStr] = resultStr.split(":");
+    const confValues = confsStr.split(",").map(parseFloat);
+    
+    // Map confidence values to class names
+    const confidences = {
+      'good-serve': confValues[0] || 0,
+      'jerky-motion': confValues[1] || 0,
+      'lacks-pronation': confValues[2] || 0,
+      'short-swing': confValues[3] || 0
+    };
+    
+    // Get the top confidence for display
+    const topConfidence = Math.max(...confValues);
+    
+    displayClassification(className, topConfidence);
+    updateConfidenceBars(confidences);
+  }
+}
+
+/* ==== Wire up UI ==== */
+$("btnConnect").addEventListener("click", connectBLE);
+$("btnDisconnect").addEventListener("click", disconnectBLE);
+
+// Initialize
+setStatus("Not Connected", false);
+resetDisplay();
+log("Ready. Click 'Connect to ServeSense' to begin.");
+</script>
+</body>
+</html>

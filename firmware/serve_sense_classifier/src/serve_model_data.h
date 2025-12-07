@@ -1,4 +1,4 @@
-/* Copyright 2020 The TensorFlow Authors. All Rights Reserved.
+/* Copyright 2020 The TensorFlow Authors. All Rights Reserved. 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
 You may obtain a copy of the License at
@@ -10,18 +10,15 @@ See the License for the specific language governing permissions and
 limitations under the License.
 ==============================================================================*/
 
-#ifndef TENSORFLOW_LITE_MICRO_EXAMPLES_MAGIC_WAND_RASTERIZE_STROKE_H
-#define TENSORFLOW_LITE_MICRO_EXAMPLES_MAGIC_WAND_RASTERIZE_STROKE_H
+// This is a standard TensorFlow Lite model file that has been converted into a
+// C data array, so it can be easily compiled into a binary for devices that
+// don't have a file system. It was created using the command:
+// xxd -i serve_model.tflite > serve_model_data.cc
 
-#include <cstdint>
+#ifndef SERVESENSE_SERVE_MODEL_DATA_H_
+#define SERVESENSE_SERVE_MODEL_DATA_H_
 
-void RasterizeStroke(
-    int8_t* stroke_points,
-    int stroke_points_count,
-    float x_range, 
-    float y_range, 
-    int width, 
-    int height,
-    int8_t* out_buffer);
+extern const unsigned char g_serve_model_data[];
+extern const int g_serve_model_data_len;
 
-#endif   // TENSORFLOW_LITE_MICRO_EXAMPLES_MAGIC_WAND_RASTERIZE_STROKE_H
+#endif  // SERVESENSE_SERVE_MODEL_DATA_H_
