@@ -185,6 +185,7 @@
         <option value="low-speed">Low Speed</option>
         <option value="short-swing">Short Swing</option>
         <option value="jerky-motion">Jerky Motion</option>
+        <option value="lacks-pronation">Lacks Pronation</option>
       </select>
       <span id="recordInfo" class="badge">Use physical switch on D1 to record</span>
       <span id="sessionInfo" class="badge">Session: 0, Samples: 0</span>
@@ -227,12 +228,14 @@ let imuChar = null;
 let ctrlChar = null;
 
 /* ==== Recording State ==== */
-let sessions = {};  // sessionId -> {sessionId, label, samples: [{millis, ax, ay, az, gx, gy, gz}]}
+let sessions = {};  // webSessionId -> {sessionId, label, samples: [{millis, ax, ay, az, gx, gy, gz}]}
 let currentSession = null;
 let isRecording = false;
 let lastPacketTime = 0;
 let lastSessionId = null;
 let currentLabel = 'good-serve';
+let webSessionCounter = 0;  // Our own session counter for the web app
+let currentWebSessionId = null;
 
 /* ==== 3D Racket Visualization ==== */
 let scene, camera, renderer, racket;
@@ -365,9 +368,9 @@ function update3DRacket(gx, gy, gz) {
   // Apply gyroscope data to racket orientation
   // Scale down the rotation for smoother visualization
   const scale = 0.0005;
-  racket.rotation.x += gy * scale;
-  racket.rotation.y += gz * scale;
-  racket.rotation.z += gx * scale;
+  racket.rotation.x += gz * scale;
+  racket.rotation.y += gx * scale;
+  racket.rotation.z += gy * scale;
   
   // Render the scene
   renderer.render(scene, camera);
@@ -496,58 +499,72 @@ function onIMUPacket(event) {
   lastPacketTime = Date.now();
 
   // Update UI and log packet info for debugging
-  $("#sessionInfo").textContent = `Session: ${sessionId}, Samples: ${sequence + 1}, Capture: ${captureOn ? 'ON' : 'OFF'}`;
+  $("#sessionInfo").textContent = `Session: ${sessionId}, Samples: ${sequence + 1}, Recording: YES`;
   
   // Debug log first few packets
   if (sequence < 3) {
-    log(`Packet: session=${sessionId}, seq=${sequence}, flags=${flags}, captureOn=${captureOn}`);
+    log(`Packet: session=${sessionId}, seq=${sequence}, flags=${flags}`);
   }
 
-  // Check if session changed (new recording started)
+  // Check if we switched to a new firmware session (new recording started)
   if (lastSessionId !== null && sessionId !== lastSessionId) {
-    // Session changed - save the previous session
-    log(`Session ${lastSessionId} completed and saved (${sessions[lastSessionId]?.samples.length || 0} samples)`);
-    isRecording = false;
+    // New session started - save the previous web session
+    if (currentSession) {
+      log(`Recording ${currentWebSessionId} completed (${currentSession.samples.length} samples)`);
+      updateSummaryAndList();
+    }
+    // Start new web session
+    webSessionCounter++;
+    currentWebSessionId = webSessionCounter;
+    
+    sessions[currentWebSessionId] = {
+      webSessionId: currentWebSessionId,
+      firmwareSessionId: sessionId,
+      label: currentLabel,
+      samples: []
+    };
+    currentSession = sessions[currentWebSessionId];
+    
+    log(`Recording started: #${currentWebSessionId} (firmware session ${sessionId}), label: ${currentLabel}`);
+    resetCanvas();
+    isRecording = true;
     updateRecordingUI();
-    updateSummaryAndList();
+  }
+  
+  // First packet ever
+  if (!currentSession) {
+    webSessionCounter++;
+    currentWebSessionId = webSessionCounter;
+    
+    sessions[currentWebSessionId] = {
+      webSessionId: currentWebSessionId,
+      firmwareSessionId: sessionId,
+      label: currentLabel,
+      samples: []
+    };
+    currentSession = sessions[currentWebSessionId];
+    
+    log(`Recording started: #${currentWebSessionId} (firmware session ${sessionId}), label: ${currentLabel}`);
+    resetCanvas();
+    isRecording = true;
+    updateRecordingUI();
   }
   
   lastSessionId = sessionId;
-
-  if (!captureOn) {
-    // Not capturing, skip storing data
-    return;
-  }
-
-  // captureOn is true - start/continue recording
-  if (!isRecording) {
-    isRecording = true;
-    log(`Recording started: Session ${sessionId}`);
-    resetCanvas();
-    updateRecordingUI();
-  }
 
   if (marker) {
     log(`Marker set for session ${sessionId}`);
   }
 
-  // Store data
-  if (!sessions[sessionId]) {
-    sessions[sessionId] = {
-      sessionId: sessionId,
-      label: currentLabel,
-      samples: []
-    };
-    log(`Session ${sessionId} labeled as: ${currentLabel}`);
+  // Store data in current web session
+  if (currentSession) {
+    currentSession.samples.push({
+      millis: millis_ms,
+      sequence: sequence,
+      ax, ay, az,
+      gx, gy, gz
+    });
   }
-  currentSession = sessions[sessionId];
-  
-  currentSession.samples.push({
-    millis: millis_ms,
-    sequence: sequence,
-    ax, ay, az,
-    gx, gy, gz
-  });
 
   updateRecordingUI();
   drawLiveData(currentSession.samples);
@@ -638,7 +655,7 @@ function updateSummaryAndList() {
     div.className = "item";
     div.innerHTML = `
       <div>
-        <span class="label-pill">Session ${s.sessionId}</span>
+        <span class="label-pill">Recording #${s.webSessionId}</span>
         <span style="margin-left:8px; padding:2px 8px; background:#dbeafe; color:#1d4ed8; border-radius:4px; font-size:0.75rem; font-weight:500;">
           ${s.label || 'unlabeled'}
         </span>

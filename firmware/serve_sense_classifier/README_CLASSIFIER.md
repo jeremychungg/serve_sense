@@ -4,36 +4,27 @@ Real-time tennis serve classification using TensorFlow Lite on Xiao ESP32S3.
 
 ## Overview
 
-This classifier runs a trained machine learning model on the Xiao ESP32S3 to identify different types of tennis serves and provide feedback on technique. The system detects 9 different serve classifications:
+This classifier runs a trained machine learning model on the Xiao ESP32S3 to identify different types of tennis serves and provide instant feedback via haptic vibration and LED patterns. The system classifies 4 distinct serve types based on technique quality.
 
-### Serve Types & Mechanics
+### Serve Classifications
 
-**Flat Serves:**
-- ✅ Flat – Good Mechanics
-- ⚠️ Flat – Low Toss
-- ⚠️ Flat – Low Racket Speed
-
-**Slice Serves:**
-- ✅ Slice – Good Mechanics
-- ⚠️ Slice – Low Toss
-- ⚠️ Slice – Low Racket Speed
-
-**Kick Serves:**
-- ✅ Kick – Good Mechanics
-- ⚠️ Kick – Low Toss
-- ⚠️ Kick – Low Racket Speed
+- ✅ **Good Serve** - Proper mechanics and execution
+- ⚠️ **Jerky Motion** - Inconsistent or rough movement
+- ⚠️ **Lacks Pronation** - Insufficient wrist pronation during contact
+- ⚠️ **Short Swing** - Abbreviated or incomplete swing path
 
 ## Hardware Requirements
 
-- **Xiao ESP32S3** with IMU (ICM-20600)
-- Physical switch connected to **D1 pin** (for recording control)
+- **Xiao ESP32S3** with built-in IMU (ICM-20600)
+- Physical switch connected to **D1 pin** (ON = LOW/closed to GND, OFF = HIGH/open)
+- Vibration motor connected to **A0 pin** (for haptic feedback)
 - USB cable for power and programming
 
 ## Software Requirements
 
 - PlatformIO (for firmware upload)
-- Chrome/Edge browser (for Web Bluetooth)
-- Trained TensorFlow Lite model (must be in `magic_wand_model_data.cpp`)
+- Chrome/Edge browser with Web Bluetooth support
+- Trained TensorFlow Lite model (in `serve_model_data.cpp`)
 
 ## Setup Instructions
 
@@ -46,127 +37,213 @@ pio run --target upload
 
 ### 2. Open Web Interface
 
-1. Open `web/ServeSenseClassifier.html` in Chrome or Edge
-2. Click "🔌 Connect to ServeSense"
-3. Select your BLESense device from the popup
+**Option A: Web GUI (Recommended)**
+1. Open `ServeSenseClassifier.html` in Chrome or Edge
+2. Click "Connect to ServeSense"
+3. Select your ServeSense device from the Bluetooth popup
+4. Wait for connection confirmation
+
+**Option B: Python GUI**
+```bash
+python classifier_gui.py
+```
 
 ### 3. Record and Classify a Serve
 
-**Using Physical Switch (Recommended):**
-1. Flip the switch to **ON** position (connects D1 to GND)
-2. Perform your tennis serve motion
-3. Flip the switch to **OFF** position
-4. Wait for classification result
+1. **Start Recording**: Flip the switch to **ON** position (D1 → GND)
+   - LED turns on solid
+   - Vibration motor activates
+   
+2. **Perform Motion**: Execute your tennis serve
 
-**Using Serial Commands (Alternative):**
-1. Open Serial Monitor (115200 baud)
-2. Press `r` to start recording
-3. Perform your tennis serve motion
-4. Press `s` to stop and classify
+3. **Stop Recording**: Flip the switch to **OFF** position
+   - LED turns off
+   - Device processes classification (~1 second)
+
+4. **Get Feedback**: 
+   - **Haptic Pattern**: Distinctive vibration sequence
+   - **LED Pattern**: Synchronized blink pattern
+   - **Web Display**: Classification with confidence scores
+
+### Feedback Patterns
+
+**Good Serve** 🎾
+- 3 quick pulses (100ms on, 100ms off)
+- Feels celebratory!
+
+**Jerky Motion** ⚡
+- 2 long pulses (400ms on, 200ms off)
+- Mimics the rough motion
+
+**Lacks Pronation** ⚠️
+- 1 long + 2 short pulses (500ms, then 2×100ms)
+- Warning pattern
+
+**Short Swing** 🔄
+- 4 very short rapid pulses (80ms on, 80ms off)
+- Feels quick and abbreviated
+
+**Startup** ✅
+- 1 second continuous pulse on boot
+- Confirms hardware is working
 
 ## How It Works
 
 ### Firmware (Xiao ESP32S3)
 
-1. **IMU Data Collection**: Reads accelerometer and gyroscope data at ~104 Hz
-2. **Motion Integration**: Converts gyro data (gy, gz) into a 2D stroke path
-3. **Rasterization**: Transforms the stroke into a 32×32×3 image (like Magic Wand)
-4. **ML Inference**: Runs TensorFlow Lite model to classify the serve
-5. **BLE Transmission**: Sends classification result to web app
+1. **IMU Data Collection**: Reads 6-axis sensor data at ~40 Hz (ax, ay, az, gx, gy, gz)
+2. **Buffer Management**: Stores 160 samples (4 seconds @ 40Hz) in memory
+3. **Data Quantization**: Converts float32 IMU data to int8 for model input
+4. **ML Inference**: Runs TensorFlow Lite Micro model on device
+5. **Classification**: Outputs probabilities for all 4 serve types
+6. **Multi-Modal Feedback**:
+   - BLE transmission to web/Python GUI
+   - Haptic vibration patterns via motor
+   - Visual LED blink patterns
+   - Serial output for debugging
 
 ### Web Interface
 
-1. **BLE Connection**: Connects to Xiao via Web Bluetooth API
-2. **Switch Monitoring**: Listens for switch state changes (ON/OFF)
-3. **Result Display**: Shows classification with confidence score
-4. **History Tracking**: Maintains log of previous classifications
+1. **BLE Connection**: Connects via Web Bluetooth API (UUID 0xFF00 service)
+2. **Real-time Monitoring**: Tracks switch state and recording status
+3. **Result Display**: Shows classification with color-coded prediction
+4. **Confidence Bars**: Displays all 4 class probabilities visually
+5. **Statistics**: Tracks total classifications and timestamps
 
-## BLE Characteristics
+## BLE Protocol
 
-| UUID Suffix | Name | Type | Description |
-|-------------|------|------|-------------|
-| `300a` | Stroke | Read | Raw stroke points (for debugging) |
-| `300b` | Switch | Read/Notify | Switch state (0=OFF, 1=ON) |
-| `300c` | Result | Read/Notify | Classification result string |
+The classifier uses the same BLE protocol as ServeSense Logger for compatibility.
 
-## Result Format
+| UUID | Name | Type | Description |
+|------|------|------|-------------|
+| `0xFF00` | Service | - | Main BLE service |
+| `0xFF01` | IMU Data | Notify | IMU packet stream (compatible with logger) |
+| `0xFF02` | Control | Write | Start/stop commands (0x00=stop, 0x01=start) |
+| `0xFF04` | Switch State | Notify | Recording state (0=idle, 1=recording) |
+| `0xFF05` | Result | Notify | Classification results with all probabilities |
 
-The classification result is sent as a string:
+### Result Format
+
+Classification results are sent as:
 ```
-<label>:<confidence>%
+<label>:<conf1>,<conf2>,<conf3>,<conf4>
 ```
 
-Examples:
-- `flat_good_mechanics:87.3%`
-- `kick_low_toss:62.1%`
-- `UNKNOWN:25.4%`
+Where:
+- `label` = predicted class name or "UNKNOWN"
+- `conf1-4` = confidence percentages for [good-serve, jerky-motion, lacks-pronation, short-swing]
+
+Example:
+```
+good-serve:87.3,5.2,4.1,3.4
+```
 
 ## Confidence Thresholds
 
 - **Minimum Confidence**: 35% (if below, result is "UNKNOWN")
-- **Minimum Margin**: 8% (top prediction must beat #2 by this amount)
 
-These ensure the model only reports results it's confident about.
+This ensures the model only reports results when reasonably confident.
+
+## Model Details
+
+**Architecture:**
+- Input: (160, 6) int8 tensor - 160 time steps × 6 IMU axes
+- Output: (4,) int8 tensor - probabilities for 4 serve types
+- Quantization: int8 post-training quantization for efficiency
+- Size: ~80KB model + 80KB tensor arena
+
+**Training:**
+- Dataset: Tennis serve IMU recordings from multiple players
+- Classes: good-serve, jerky-motion, lacks-pronation, short-swing
+- Framework: TensorFlow → TensorFlow Lite → TFLite Micro
+
+The model expects raw IMU data (ax, ay, az, gx, gy, gz) sampled at ~40Hz.
 
 ## Troubleshooting
 
 ### "Not Connected" in Web App
-- Ensure Xiao is powered on and BLE is working
-- Check that you're using Chrome/Edge (Safari doesn't support Web Bluetooth)
+- Ensure Xiao is powered on and firmware is uploaded
+- Use Chrome or Edge (Safari doesn't support Web Bluetooth)
+- Check that device is advertising as "ServeSense"
 - Try refreshing the page and reconnecting
 
 ### "UNKNOWN" Classifications
-- Ensure you're performing a full serve motion
-- Check that the switch toggles during the entire motion
+- Ensure you're performing a full serve motion (4 seconds)
+- Record the entire swing from start to finish
+- Check that motion has sufficient speed and rotation
 - Verify the model file is correctly flashed
 
-### No Response After Recording
-- Check Serial Monitor for error messages
-- Ensure the gesture has enough data points (>4 required)
-- Verify IMU is working (should see motion data in Serial)
+### No Haptic/LED Feedback
+- Check vibration motor connection to A0
+- Verify motor ground is connected
+- Test motor by touching wires to 3.3V briefly
+- LED should always blink on startup (1 second pulse)
 
-### Switch Not Detected
+### Switch Not Responding
 - Verify switch is connected to D1 pin and GND
-- Check that switch is configured as INPUT_PULLUP
-- Test switch with multimeter (should be LOW when ON)
+- Check that switch closes to GND when ON
+- Test with multimeter: should read LOW (~0V) when ON
+- LED should turn on solid when recording
+
+### Serial Monitor Errors
+Common messages:
+- `ERROR: IMU initialization failed!` - Check I2C connections
+- `ERROR: Inference failed!` - Model may be corrupted, re-upload firmware
+- `Tensor allocation failed!` - Increase kTensorArenaSize in code
 
 ## Model Training
 
-The TensorFlow Lite model must be trained on serve data and converted to C array format. See `notebooks/` for training scripts.
+The TensorFlow Lite model is trained on labeled serve data and converted to C array format for embedded deployment.
 
-The model expects:
-- **Input**: 32×32×3 int8 rasterized image
-- **Output**: 9 class probabilities (int8 quantized)
+**Training Pipeline:**
+1. Collect serve data using ServeSense Logger
+2. Label and preprocess IMU sequences
+3. Train model in TensorFlow/Keras
+4. Convert to TensorFlow Lite with int8 quantization
+5. Generate C array using `xxd` or similar tool
+6. Replace contents in `serve_model_data.cpp`
 
-## Files
+See the main ServeSense repository for training notebooks and scripts.
+
+## Project Structure
 
 ```
-serve_sense/
-├── firmware/serve_sense_classifier/
-│   ├── src/
-│   │   ├── main.cpp                    # Main classification firmware
-│   │   ├── imu_provider.cpp/h          # IMU interface
-│   │   ├── rasterize_stroke.cpp/h      # Stroke → image converter
-│   │   └── magic_wand_model_data.cpp/h # TFLite model
-│   └── platformio.ini
-├── web/
-│   └── ServeSenseClassifier.html       # Web-based UI
-└── README_CLASSIFIER.md                # This file
+serve_sense_classifier/
+├── src/
+│   ├── main.cpp                    # Main classification firmware
+│   ├── imu_provider.cpp/h          # IMU interface (ICM-20600)
+│   ├── constants.h                 # Configuration constants
+│   ├── serve_model_data.cpp/h      # TFLite model (C array)
+│   └── tflm_esp32_port.cpp         # TFLite Micro ESP32 port
+├── lib/
+│   └── Arduino_TensorFlowLite/     # TFLite Micro library
+├── ServeSenseClassifier.html       # Web-based GUI
+├── classifier_gui.py               # Python GUI (optional)
+├── platformio.ini                  # Build configuration
+└── README_CLASSIFIER.md            # This file
 ```
 
 ## Future Improvements
 
+- [x] Add haptic feedback patterns
+- [x] Add synchronized LED patterns
+- [x] Display all class probabilities in web GUI
 - [ ] Add real-time IMU visualization during recording
-- [ ] Display top-3 predictions with probabilities
-- [ ] Add confidence calibration settings
 - [ ] Export classification history to CSV
-- [ ] Add vibration feedback on Xiao after classification
-- [ ] Multi-serve session analysis
+- [ ] Add confidence calibration settings
+- [ ] Multi-serve session analysis with statistics
+- [ ] Battery percentage indicator
 
 ## Credits
 
-Based on TensorFlow Lite Micro Magic Wand example, adapted for tennis serve classification.
+Based on TensorFlow Lite Micro, adapted for real-time tennis serve classification with multi-modal feedback.
+
+**Key Technologies:**
+- TensorFlow Lite Micro for embedded ML
+- ArduinoBLE for wireless communication
+- ESP32 I2C for IMU interface
+- ICM-20600 6-axis IMU sensor
 
 ---
 
-**Note**: Make sure your model file (`magic_wand_model_data.cpp`) is trained on the 9 serve classes listed above. Using a different model (like the digit recognition model) will give incorrect results.
+**For training data collection, use the ServeSense Logger firmware. For model training and evaluation, see the main repository notebooks.**
