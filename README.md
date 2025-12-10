@@ -1,7 +1,7 @@
-Serve Sense – Tennis Serve Insights
+ServeSense – Tennis Serve Insights
 ===================================
 
-Serve Sense is a wearable tennis serve analysis system built on the Seeed XIAO ESP32S3. The system includes:
+ServeSense is a wearable tennis serve analysis system built on the Seeed XIAO ESP32S3. The system includes:
 
 1. **Data Logger** - Captures high-fidelity 6-axis IMU data (100 Hz) during serve motions via BLE
 2. **ML Classifier** - Real-time on-device serve classification with TensorFlow Lite Micro
@@ -27,15 +27,9 @@ Repository Layout
 
 - `firmware/serve_sense_logger/` – PlatformIO project for data collection; streams accel/gyro over BLE at 100 Hz with serve-segment markers. See logger directory for details.
 - `firmware/serve_sense_classifier/` – TensorFlow Lite Micro inference app running real-time serve classification with haptic and LED feedback. Includes web-based GUI for visualization (see `README_CLASSIFIER.md`).
-- `python/` – Desktop tooling:
-  - `collect_ble.py` – BLE central logger using `bleak`, writes NDJSON/Parquet.
-  - `ble_utils.py` – BLE scanning and connection utilities.
-  - `segment_serves.py` – Simple peak/pause segmentation utilities.
-  - `serve_labels.py` – Labeling utilities for recorded serves.
-  - `combine_recordings.py` – Merge multiple recording sessions.
 - `notebooks/` – Jupyter notebooks for data analysis, model training, and prototyping. Includes `ServeSense.ipynb` for end-to-end workflow.
 - `models/` – Exported `.tflite` model files and metadata.
-- `data/` – Raw and processed recordings (gitignored by default; see `data/.gitkeep`).
+- `data/` – Raw and processed `.json` recordings (gitignored by default; see `data/.gitkeep`).
 
 Getting Started
 ---------------
@@ -97,32 +91,6 @@ The model was trained using data collected from the logger and processed in note
 3. Export the trained model as `.tflite` and convert to C array
 4. Update `firmware/serve_sense_classifier/src/serve_model_data.cpp`
 
-Roadmap
--------
-
-- [x] Build working classifier with haptic and LED feedback
-- [x] Create web-based GUI for classification visualization
-- [x] Implement 4-class serve classification (good-serve, jerky-motion, lacks-pronation, short-swing)
-- [ ] Improve racket attachment + vibration damping to reduce IMU noise
-- [ ] Capture ≥100 labeled serves per class from multiple players
-- [ ] Experiment with data augmentation techniques
-- [ ] Benchmark feature pipelines: raw window vs. FFT vs. quaternion space
-- [ ] Add battery monitoring and power management
-
-Publishing to GitHub
---------------------
-
-Project repository: https://github.com/jeremychungg/serve_sense
-
-To clone and set up:
-```bash
-git clone https://github.com/jeremychungg/serve_sense
-cd serve_sense
-pip install -r python/requirements.txt
-```
-
-Questions / Next Steps
-----------------------
 
 For specific documentation:
 - **Classifier firmware**: See `firmware/serve_sense_classifier/README_CLASSIFIER.md`
